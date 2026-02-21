@@ -10,10 +10,12 @@ const TONES: { value: ToneType; label: string; desc: string }[] = [
   { value: "review", label: "리뷰", desc: "솔직한 장단점 분석" },
   { value: "guide", label: "가이드", desc: "단계별 친절한 설명" },
 ];
+const MODEL_SUGGESTIONS = ["gpt-5.3", "gpt-5.2", "gpt-5", "gpt-4.1", "gpt-4o"];
 
 export default function BlogGenerator() {
   const [keyword, setKeyword] = useState("");
   const [tone, setTone] = useState<ToneType>("experience");
+  const [model, setModel] = useState("gpt-5.3");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateResponse | null>(null);
@@ -34,7 +36,12 @@ export default function BlogGenerator() {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keyword: keyword.trim(), tone, fixHints }),
+        body: JSON.stringify({
+          keyword: keyword.trim(),
+          tone,
+          model: model.trim() || undefined,
+          fixHints,
+        }),
       });
 
       const data = await res.json();
@@ -132,6 +139,32 @@ export default function BlogGenerator() {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="mt-5">
+          <label
+            htmlFor="model"
+            className="block text-sm font-medium text-zinc-400 mb-2"
+          >
+            AI 모델
+          </label>
+          <input
+            id="model"
+            type="text"
+            list="model-suggestions"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder="예: gpt-5.3"
+            className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white placeholder-zinc-500 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors"
+          />
+          <datalist id="model-suggestions">
+            {MODEL_SUGGESTIONS.map((option) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+          <p className="text-xs text-zinc-500 mt-2">
+            추천: gpt-5.3. 계정에서 사용 불가한 모델명은 오류가 날 수 있습니다.
+          </p>
         </div>
       </div>
 

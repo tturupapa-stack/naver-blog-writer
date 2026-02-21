@@ -17,6 +17,7 @@ const DRAFT_CANDIDATE_COUNT = 3;
 const MAX_COMPLIANCE_PASSES = 2;
 const MIN_NATURALNESS_TARGET = 68;
 const SOFT_FOCUS_LIMIT = 3;
+const DEFAULT_TEXT_MODEL = "gpt-4o";
 
 interface RawParsedBlog {
   title?: string;
@@ -44,6 +45,88 @@ interface Candidate {
 
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean).map((v) => v.trim()).filter(Boolean)));
+}
+
+function sanitizeModelId(value: string | null | undefined): string {
+  const normalized = (value || "").trim();
+  if (!normalized) return "";
+  return normalized.replace(/\s+/g, "");
+}
+
+function extractErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "";
+}
+
+function isModelSelectionError(error: unknown): boolean {
+  const errorLike =
+    typeof error === "object" && error !== null ? (error as Record<string, unknown>) : null;
+  const status = typeof errorLike?.status === "number" ? errorLike.status : null;
+  const code =
+    typeof errorLike?.code === "string"
+      ? errorLike.code
+      : typeof (errorLike?.error as Record<string, unknown> | undefined)?.code === "string"
+        ? ((errorLike?.error as Record<string, unknown>).code as string)
+        : "";
+  const message = extractErrorMessage(error).toLowerCase();
+  const normalizedCode = code.toLowerCase();
+
+  return (
+    status === 404 ||
+    normalizedCode.includes("model") ||
+    message.includes("model") ||
+    message.includes("does not exist") ||
+    message.includes("not found") ||
+    message.includes("unsupported")
+  );
+}
+
+type ChatCreateParams = Omit<
+  OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+  "model"
+>;
+
+async function createChatCompletionWithFallback(params: {
+  openai: OpenAI;
+  request: ChatCreateParams;
+  preferredModel: string;
+}): Promise<{ completion: OpenAI.Chat.Completions.ChatCompletion; usedModel: string }> {
+  const { openai, request, preferredModel } = params;
+  const normalizedPreferredModel =
+    sanitizeModelId(preferredModel) || DEFAULT_TEXT_MODEL;
+  const candidateModels =
+    normalizedPreferredModel === DEFAULT_TEXT_MODEL
+      ? [normalizedPreferredModel]
+      : [normalizedPreferredModel, DEFAULT_TEXT_MODEL];
+
+  let lastError: unknown = null;
+
+  for (const candidateModel of candidateModels) {
+    try {
+      const completion = await openai.chat.completions.create({
+        model: candidateModel,
+        ...request,
+      });
+      return { completion, usedModel: candidateModel };
+    } catch (error) {
+      lastError = error;
+      const allowFallback =
+        candidateModel !== DEFAULT_TEXT_MODEL && isModelSelectionError(error);
+      if (!allowFallback) {
+        throw error;
+      }
+      console.warn("[generate.model.fallback]", {
+        requestedModel: normalizedPreferredModel,
+        fallbackModel: DEFAULT_TEXT_MODEL,
+        reason: extractErrorMessage(error),
+      });
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("모델 호출에 실패했습니다. 잠시 후 다시 시도해주세요.");
 }
 
 function buildFallbackTags(keyword: string): string[] {
@@ -417,7 +500,7 @@ function pickTopRelevantImages(images: UnsplashImage[], limit: number): Unsplash
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { keyword, tone, fixHints } = body as GenerateRequest;
+    const { keyword, tone, fixHints, model } = body as GenerateRequest;
 
     if (!keyword?.trim()) {
       return NextResponse.json({ error: "키워드를 입력해주세요." }, { status: 400 });
@@ -452,6 +535,11 @@ export async function POST(req: NextRequest) {
     const openai = new OpenAI({ apiKey: openaiKey });
     const selectedTone = tone ?? ("experience" as ToneType);
     const requestedFixHints = uniqueStrings(fixHints || []);
+    const selectedModel =
+      sanitizeModelId(model) ||
+      sanitizeModelId(process.env.OPENAI_TEXT_MODEL) ||
+      DEFAULT_TEXT_MODEL;
+    let usedModel = selectedModel;
 
     const draftPrompt = buildDraftPrompt({
       keyword,
@@ -459,16 +547,21 @@ export async function POST(req: NextRequest) {
       searchContext,
     });
 
-    const draftCompletion = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [{ role: "user", content: draftPrompt }],
-      n: DRAFT_CANDIDATE_COUNT,
-      temperature: 0.85,
-      top_p: 0.9,
-      frequency_penalty: 0.3,
-      presence_penalty: 0.2,
-      max_tokens: 4000,
+    const draftResult = await createChatCompletionWithFallback({
+      openai,
+      preferredModel: usedModel,
+      request: {
+        messages: [{ role: "user", content: draftPrompt }],
+        n: DRAFT_CANDIDATE_COUNT,
+        temperature: 0.85,
+        top_p: 0.9,
+        frequency_penalty: 0.3,
+        presence_penalty: 0.2,
+        max_tokens: 4000,
+      },
     });
+    const draftCompletion = draftResult.completion;
+    usedModel = draftResult.usedModel;
 
     let bestCandidate: Candidate | null = null;
 
@@ -523,15 +616,20 @@ export async function POST(req: NextRequest) {
       });
 
       try {
-        const refinedCompletion = await openai.chat.completions.create({
-          model: "gpt-4o",
-          messages: [{ role: "user", content: compliancePrompt }],
-          temperature: 0.25,
-          top_p: 1,
-          frequency_penalty: 0,
-          presence_penalty: 0,
-          max_tokens: 4000,
+        const refinedResult = await createChatCompletionWithFallback({
+          openai,
+          preferredModel: usedModel,
+          request: {
+            messages: [{ role: "user", content: compliancePrompt }],
+            temperature: 0.25,
+            top_p: 1,
+            frequency_penalty: 0,
+            presence_penalty: 0,
+            max_tokens: 4000,
+          },
         });
+        const refinedCompletion = refinedResult.completion;
+        usedModel = refinedResult.usedModel;
 
         const refinedContent = refinedCompletion.choices[0]?.message?.content;
         if (!refinedContent || typeof refinedContent !== "string") {
@@ -622,6 +720,8 @@ export async function POST(req: NextRequest) {
       naturalnessScore: review.naturalnessScore,
       selectionScore: review.selectionScore,
       requestedFixHints,
+      requestedModel: selectedModel,
+      usedModel,
       imageQueries,
       preferredDomains,
     });
@@ -630,6 +730,7 @@ export async function POST(req: NextRequest) {
       title: parsed.title,
       html,
       tags: parsed.tags,
+      usedModel,
       thumbnail,
       images: allImages,
       review,

@@ -226,6 +226,11 @@ export default function BlogResult({
             <p className="mt-1 text-xs text-zinc-500">
               pipeline: {result.qualityGate.pipelineVersion} / 자연스러움 목표 {result.qualityGate.naturalnessTarget}
             </p>
+            {result.usedModel && (
+              <p className="mt-1 text-xs text-zinc-500">
+                사용 모델: {result.usedModel}
+              </p>
+            )}
           </div>
         )}
 

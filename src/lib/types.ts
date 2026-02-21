@@ -18,6 +18,7 @@ export interface UnsplashImage {
 export interface GenerateRequest {
   keyword: string;
   tone: ToneType;
+  model?: string;
   fixHints?: string[];
 }
 
@@ -25,6 +26,7 @@ export interface GenerateResponse {
   title: string;
   html: string;
   tags: string[];
+  usedModel?: string;
   thumbnail: UnsplashImage | null;
   images: UnsplashImage[];
   review?: ReviewReport;

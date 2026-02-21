@@ -40,7 +40,7 @@ export default function Home() {
             >
               Unsplash
             </a>{" "}
-            | AI 텍스트 생성: OpenAI GPT-4o | 검색: Brave Search
+            | AI 텍스트 생성: OpenAI (선택 모델) | 검색: Brave Search
           </p>
           <p className="mt-1">
             생성된 글은 참고용입니다. 발행 전 내용을 검토해주세요.
