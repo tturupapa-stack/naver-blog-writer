@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { ToneType, GenerateResponse } from "@/lib/types";
+import { buildNaverHtml } from "@/lib/naver-html";
+import { ToneType, GenerateResponse, UnsplashImage } from "@/lib/types";
 import BlogResult from "./BlogResult";
 
 const TONES: { value: ToneType; label: string; desc: string }[] = [
@@ -58,6 +59,43 @@ export default function BlogGenerator() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleReplaceBodyImage(slotIndex: number, image: UnsplashImage) {
+    setResult((prev) => {
+      if (!prev) return prev;
+
+      const baseBodyImages =
+        Array.isArray(prev.bodyImages) && prev.bodyImages.length > 0
+          ? [...prev.bodyImages]
+          : prev.images.slice(0, Math.min(3, prev.images.length));
+      if (slotIndex < 0 || slotIndex >= baseBodyImages.length) return prev;
+      if (!Array.isArray(prev.sections) || !prev.keyword) return prev;
+
+      const nextBodyImages = [...baseBodyImages];
+      const duplicatedSlotIndex = nextBodyImages.findIndex(
+        (bodyImage, idx) => idx !== slotIndex && bodyImage.id === image.id
+      );
+
+      if (duplicatedSlotIndex >= 0) {
+        const original = nextBodyImages[slotIndex];
+        nextBodyImages[slotIndex] = image;
+        nextBodyImages[duplicatedSlotIndex] = original;
+      } else {
+        nextBodyImages[slotIndex] = image;
+      }
+
+      return {
+        ...prev,
+        bodyImages: nextBodyImages,
+        html: buildNaverHtml({
+          title: prev.title,
+          sections: prev.sections,
+          images: nextBodyImages,
+          keyword: prev.keyword,
+        }),
+      };
+    });
   }
 
   return (
@@ -215,6 +253,7 @@ export default function BlogGenerator() {
           result={result}
           onFixIssue={(issue) => handleGenerate([issue])}
           onFixAllIssues={(issues) => handleGenerate(issues)}
+          onReplaceBodyImage={handleReplaceBodyImage}
         />
       )}
     </div>

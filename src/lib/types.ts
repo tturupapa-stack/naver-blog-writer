@@ -1,5 +1,11 @@
 export type ToneType = "informative" | "experience" | "review" | "guide";
 
+export interface BlogSection {
+  heading?: string;
+  body: string;
+  tip?: string;
+}
+
 export interface UnsplashImage {
   id: string;
   url: string;
@@ -23,11 +29,14 @@ export interface GenerateRequest {
 }
 
 export interface GenerateResponse {
+  keyword: string;
   title: string;
+  sections: BlogSection[];
   html: string;
   tags: string[];
   usedModel?: string;
   thumbnail: UnsplashImage | null;
+  bodyImages: UnsplashImage[];
   images: UnsplashImage[];
   review?: ReviewReport;
   qualityGate?: {

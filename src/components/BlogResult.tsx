@@ -7,15 +7,18 @@ interface BlogResultProps {
   result: GenerateResponse;
   onFixIssue: (issue: string) => void;
   onFixAllIssues: (issues: string[]) => void;
+  onReplaceBodyImage: (slotIndex: number, image: UnsplashImage) => void;
 }
 
 export default function BlogResult({
   result,
   onFixIssue,
   onFixAllIssues,
+  onReplaceBodyImage,
 }: BlogResultProps) {
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState<"preview" | "html">("preview");
+  const [activeBodySlot, setActiveBodySlot] = useState(0);
   const previewRef = useRef<HTMLDivElement>(null);
 
   async function handleCopyHtml() {
@@ -99,6 +102,14 @@ export default function BlogResult({
   }[review.overallStatus];
   const warningItems = review.items.filter((item) => item.status === "warn");
   const hardWarningItems = warningItems.filter((item) => item.isHard);
+  const bodyImages =
+    Array.isArray(result.bodyImages) && result.bodyImages.length > 0
+      ? result.bodyImages
+      : result.images.slice(0, Math.min(3, result.images.length));
+  const activeBodySlotIndex =
+    bodyImages.length > 0
+      ? Math.min(activeBodySlot, bodyImages.length - 1)
+      : 0;
 
   return (
     <div className="space-y-6">
@@ -300,44 +311,137 @@ export default function BlogResult({
       {/* Images Gallery */}
       {result.images.length > 0 && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6">
-          <h3 className="text-base font-bold text-white mb-4">
-            검색된 이미지 ({result.images.length}개)
-          </h3>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-            {result.images.map((img) => (
-              <div
-                key={img.id}
-                className="group relative rounded-xl overflow-hidden border border-zinc-700"
-              >
-                <img
-                  src={img.thumbUrl}
-                  alt={img.alt}
-                  className="w-full aspect-video object-cover"
-                  loading="lazy"
-                />
-                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+            <h3 className="text-base font-bold text-white">
+              검색된 이미지 ({result.images.length}개)
+            </h3>
+            {bodyImages.length > 0 && (
+              <span className="text-xs text-green-300 bg-green-500/10 border border-green-500/30 px-2 py-1 rounded-md">
+                현재 교체 슬롯: 본문 이미지 {activeBodySlotIndex + 1}
+              </span>
+            )}
+          </div>
+
+          {bodyImages.length > 0 && (
+            <div className="mb-4 bg-zinc-800/40 border border-zinc-700 rounded-xl p-3">
+              <p className="text-sm font-medium text-zinc-200">
+                본문 이미지 슬롯 선택
+              </p>
+              <p className="text-xs text-zinc-400 mt-1">
+                슬롯을 선택한 뒤 아래 검색 이미지 카드에서 교체 버튼을 누르세요.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+                {bodyImages.map((img, idx) => (
                   <button
-                    onClick={() => handleDownloadImage(img)}
-                    className="px-3 py-1.5 bg-white text-black rounded-lg text-xs font-medium hover:bg-zinc-200 transition-colors"
+                    key={`${img.id}-${idx}`}
+                    type="button"
+                    onClick={() => setActiveBodySlot(idx)}
+                    className={`rounded-lg border overflow-hidden text-left transition-colors ${
+                      idx === activeBodySlotIndex
+                        ? "border-green-500 ring-1 ring-green-500/40"
+                        : "border-zinc-700 hover:border-zinc-600"
+                    }`}
                   >
-                    다운로드
+                    <img
+                      src={img.thumbUrl}
+                      alt={img.alt}
+                      className="w-full aspect-video object-cover"
+                      loading="lazy"
+                    />
+                    <div className="px-2 py-2 bg-zinc-900">
+                      <p className="text-xs font-medium text-zinc-200">
+                        본문 이미지 {idx + 1}
+                      </p>
+                      <p
+                        className={`text-[11px] mt-0.5 ${
+                          idx === activeBodySlotIndex
+                            ? "text-green-300"
+                            : "text-zinc-500"
+                        }`}
+                      >
+                        {idx === activeBodySlotIndex
+                          ? "현재 선택됨"
+                          : "클릭해서 선택"}
+                      </p>
+                    </div>
                   </button>
-                </div>
-                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
-                  <p className="text-xs text-zinc-300 truncate">{img.alt}</p>
-                  <p className="text-[11px] text-zinc-400 truncate mt-0.5">
-                    {img.provider === "brave"
-                      ? `출처: ${img.sourceName || img.photographer}`
-                      : `Unsplash · ${img.photographer}`}
-                  </p>
-                </div>
-                {result.thumbnail?.id === img.id && (
-                  <div className="absolute top-2 left-2 px-2 py-0.5 bg-green-600 rounded text-xs text-white font-medium">
-                    썸네일
-                  </div>
-                )}
+                ))}
               </div>
-            ))}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+            {result.images.map((img) => {
+              const assignedBodySlots = bodyImages
+                .map((bodyImage, slotIdx) =>
+                  bodyImage.id === img.id ? slotIdx : -1
+                )
+                .filter((slotIdx) => slotIdx >= 0);
+              const isActiveSlotImage =
+                bodyImages[activeBodySlotIndex]?.id === img.id;
+
+              return (
+                <div
+                  key={img.id}
+                  className="group relative rounded-xl overflow-hidden border border-zinc-700"
+                >
+                  <img
+                    src={img.thumbUrl}
+                    alt={img.alt}
+                    className="w-full aspect-video object-cover"
+                    loading="lazy"
+                  />
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <button
+                      onClick={() => handleDownloadImage(img)}
+                      className="px-3 py-1.5 bg-white text-black rounded-lg text-xs font-medium hover:bg-zinc-200 transition-colors"
+                    >
+                      다운로드
+                    </button>
+                  </div>
+                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 to-transparent p-2">
+                    <p className="text-xs text-zinc-300 truncate">{img.alt}</p>
+                    <p className="text-[11px] text-zinc-400 truncate mt-0.5">
+                      {img.provider === "brave"
+                        ? `출처: ${img.sourceName || img.photographer}`
+                        : `Unsplash · ${img.photographer}`}
+                    </p>
+                    {bodyImages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onReplaceBodyImage(activeBodySlotIndex, img)
+                        }
+                        className={`mt-2 w-full rounded-md px-2 py-1 text-[11px] font-medium border transition-colors ${
+                          isActiveSlotImage
+                            ? "bg-green-500/15 text-green-300 border-green-500/40"
+                            : "bg-zinc-900/80 text-zinc-200 border-zinc-600 hover:border-green-500/50 hover:text-green-300"
+                        }`}
+                      >
+                        {isActiveSlotImage
+                          ? `본문 ${activeBodySlotIndex + 1}번 적용됨`
+                          : `본문 ${activeBodySlotIndex + 1}번으로 교체`}
+                      </button>
+                    )}
+                  </div>
+                  <div className="absolute top-2 left-2 flex flex-col gap-1">
+                    {result.thumbnail?.id === img.id && (
+                      <div className="px-2 py-0.5 bg-green-600 rounded text-xs text-white font-medium">
+                        썸네일
+                      </div>
+                    )}
+                    {assignedBodySlots.map((slotIdx) => (
+                      <div
+                        key={`${img.id}-body-${slotIdx}`}
+                        className="px-2 py-0.5 bg-blue-600/90 rounded text-xs text-white font-medium"
+                      >
+                        본문 {slotIdx + 1}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

@@ -1025,11 +1025,14 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({
+      keyword,
       title: parsed.title,
+      sections,
       html,
       tags: parsed.tags,
       usedModel,
       thumbnail,
+      bodyImages: selectedImages,
       images: allImages,
       review,
       qualityGate: {

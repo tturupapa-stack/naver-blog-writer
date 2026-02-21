@@ -17,15 +17,14 @@ export function buildNaverHtml(params: {
   let html = `<div style="font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif; line-height: 1.8; color: #333; max-width: 100%;">`;
 
   // Title
-  html += `<p style="font-size: 24px; font-weight: bold; color: #333; margin: 0 0 20px 0; text-align: center;">${escapeHtml(title)}</p>`;
-  html += `<div style="width: 60px; height: 3px; background: #2db400; margin: 0 auto 30px auto;"></div>`;
+  html += `<p style="font-size: 24px; font-weight: bold; color: #333; margin: 0 0 30px 0; text-align: center;">${escapeHtml(title)}</p>`;
 
   let imageIndex = 0;
 
   sections.forEach((section, sectionIdx) => {
     // Heading
     if (section.heading) {
-      html += `<p style="font-size: 20px; font-weight: bold; color: #2db400; margin: 30px 0 15px 0; padding-bottom: 8px; border-bottom: 2px solid #2db400;">${escapeHtml(section.heading)}</p>`;
+      html += `<p style="font-size: 20px; font-weight: bold; color: #2db400; margin: 30px 0 15px 0;">${escapeHtml(section.heading)}</p>`;
     }
 
     // Body paragraphs
