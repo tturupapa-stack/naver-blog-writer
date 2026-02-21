@@ -320,18 +320,14 @@ function isMeaningfulImageQuery(query: string): boolean {
   return tokens.length > 0;
 }
 
-function extractBrandPhrases(text: string): string[] {
-  const normalized = normalizeText(text);
-  if (!normalized) return [];
-
-  const matches =
-    normalized.match(
-      /[A-Za-z][A-Za-z0-9+\-]{1,}(?:\s+[A-Za-z0-9+\-]{1,}){0,2}|[가-힣A-Za-z]{1,}[0-9]{1,}[A-Za-z가-힣0-9+\-]*/g
-    ) || [];
-
-  return uniqueStrings(matches.map((match) => sanitizeImageQuery(match)))
-    .filter((query) => isMeaningfulImageQuery(query))
-    .slice(0, 6);
+function looksLikeBrandOrProduct(query: string): boolean {
+  const normalized = query.toLowerCase();
+  if (/[a-z]{3,}/.test(normalized)) return true;
+  if (/[0-9]/.test(normalized) && /[a-z가-힣]/.test(normalized)) return true;
+  if (/(아이폰|갤럭시|맥북|애플|삼성|소니|테슬라|스타벅스|나이키|아디다스)/.test(normalized)) {
+    return true;
+  }
+  return false;
 }
 
 function buildImageQueries(params: {
@@ -339,38 +335,32 @@ function buildImageQueries(params: {
   parsed: ParsedBlog;
   searchResults: SearchResult[];
 }): string[] {
-  const { keyword, parsed, searchResults } = params;
+  const { keyword, parsed } = params;
   const normalizedKeyword = sanitizeImageQuery(keyword);
 
-  const headingQueries = parsed.sections
-    .map((section) => sanitizeImageQuery(section.heading || ""))
-    .filter((query) => isMeaningfulImageQuery(query))
-    .slice(0, 2);
-
-  const searchTitleQueries = searchResults
-    .map((result) => sanitizeImageQuery(result.title))
+  const modelQueries = uniqueStrings(
+    parsed.imageKeywords.map((imageKeyword) => sanitizeImageQuery(imageKeyword))
+  )
     .filter((query) => isMeaningfulImageQuery(query))
     .slice(0, 3);
 
-  const brandQueries = uniqueStrings([
-    ...extractBrandPhrases(parsed.title),
-    ...parsed.imageKeywords.flatMap((keywordItem) => extractBrandPhrases(keywordItem)),
-    ...searchResults.flatMap((result) => extractBrandPhrases(result.title)),
-    ...headingQueries.flatMap((heading) => extractBrandPhrases(heading)),
-  ]).slice(0, 4);
-
-  return uniqueStrings([
-    ...parsed.imageKeywords.map((imageKeyword) => sanitizeImageQuery(imageKeyword)),
-    ...brandQueries,
-    ...searchTitleQueries,
-    ...headingQueries,
+  const baseQueries = uniqueStrings([
+    ...modelQueries,
     normalizedKeyword,
-    `${normalizedKeyword} 공식 이미지`,
-    `${normalizedKeyword} 리뷰 기사`,
-    `${normalizedKeyword} 실제 사용 사진`,
-  ])
+  ]).slice(0, 3);
+
+  const queryAnchor = baseQueries[0] || normalizedKeyword;
+  const preferBrandStyle =
+    looksLikeBrandOrProduct(normalizedKeyword) ||
+    modelQueries.some((query) => looksLikeBrandOrProduct(query));
+
+  const extraQueries = preferBrandStyle
+    ? [`${queryAnchor} 공식 이미지`, `${queryAnchor} 리뷰 기사 사진`]
+    : [`${normalizedKeyword} 기사 사진`, `${normalizedKeyword} 실제 장면 사진`];
+
+  return uniqueStrings([...baseQueries, ...extraQueries])
     .filter((query) => isMeaningfulImageQuery(query))
-    .slice(0, 6);
+    .slice(0, 4);
 }
 
 function buildImageContext(params: {
@@ -391,6 +381,37 @@ function buildImageContext(params: {
   return normalizeText(
     [params.keyword, params.parsed.title, ...sectionSnippets, ...searchSnippets].join(" | ")
   ).slice(0, 900);
+}
+
+function hostnameFromUrl(value: string): string {
+  try {
+    return new URL(value).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function pickTopRelevantImages(images: UnsplashImage[], limit: number): UnsplashImage[] {
+  if (images.length <= limit) return images.slice(0, limit);
+
+  const selected: UnsplashImage[] = [];
+  const usedQueries = new Set<string>();
+
+  for (const image of images) {
+    if (selected.length >= limit) break;
+    const matchedQuery = (image.matchedQuery || "").trim();
+    if (!matchedQuery || usedQueries.has(matchedQuery)) continue;
+    selected.push(image);
+    usedQueries.add(matchedQuery);
+  }
+
+  for (const image of images) {
+    if (selected.length >= limit) break;
+    if (selected.includes(image)) continue;
+    selected.push(image);
+  }
+
+  return selected;
 }
 
 export async function POST(req: NextRequest) {
@@ -541,6 +562,11 @@ export async function POST(req: NextRequest) {
 
     const imageQueries = buildImageQueries({ keyword, parsed, searchResults });
     const imageContext = buildImageContext({ keyword, parsed, searchResults });
+    const preferredDomains = uniqueStrings(
+      searchResults
+        .map((result) => hostnameFromUrl(result.url))
+        .filter(Boolean)
+    ).slice(0, 5);
     const allImages: UnsplashImage[] = [];
 
     try {
@@ -550,6 +576,9 @@ export async function POST(req: NextRequest) {
         queries: imageQueries.join("||"),
         context: imageContext,
       });
+      if (preferredDomains.length > 0) {
+        params.set("preferredDomains", preferredDomains.join("||"));
+      }
       const imageRes = await fetch(`${origin}/api/images?${params.toString()}`);
       const imageData = (await imageRes.json()) as ImagesApiResponse;
 
@@ -568,7 +597,7 @@ export async function POST(req: NextRequest) {
       // Images are optional
     }
 
-    const selectedImages = allImages.slice(0, 3);
+    const selectedImages = pickTopRelevantImages(allImages, 3);
     const thumbnail = allImages[0] || null;
 
     const html = buildNaverHtml({
@@ -594,6 +623,7 @@ export async function POST(req: NextRequest) {
       selectionScore: review.selectionScore,
       requestedFixHints,
       imageQueries,
+      preferredDomains,
     });
 
     return NextResponse.json({

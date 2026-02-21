@@ -19,6 +19,9 @@ interface BraveImageResult {
 
 interface BraveImageResponse {
   results?: BraveImageResult[];
+  extra?: {
+    might_be_offensive?: boolean;
+  };
 }
 
 interface UnsplashPhotoResponse {
@@ -100,6 +103,14 @@ const BRAND_HINTS = [
   "모델",
 ];
 
+const BLOCKED_SOURCE_HOSTS = [
+  "pinterest.",
+  "instagram.com",
+  "facebook.com",
+  "tiktok.com",
+  "reddit.com",
+];
+
 function normalizeSpaces(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -153,9 +164,45 @@ function getHostname(value: string | undefined): string {
   }
 }
 
+function normalizeHostname(hostname: string): string {
+  return hostname.replace(/^www\./, "").toLowerCase();
+}
+
+function parsePreferredDomains(rawValue: string | null): Set<string> {
+  if (!rawValue) return new Set<string>();
+  const domains = rawValue
+    .split("||")
+    .map((value) => normalizeHostname(value.trim()))
+    .filter(Boolean);
+  return new Set(domains);
+}
+
+function matchesPreferredDomain(hostname: string, preferredDomains: Set<string>): boolean {
+  if (!hostname || preferredDomains.size === 0) return false;
+  const normalizedHost = normalizeHostname(hostname);
+  for (const preferredDomain of preferredDomains) {
+    if (
+      normalizedHost === preferredDomain ||
+      normalizedHost.endsWith(`.${preferredDomain}`)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isBlockedSourceHost(hostname: string): boolean {
+  if (!hostname) return false;
+  const normalizedHost = normalizeHostname(hostname);
+  return BLOCKED_SOURCE_HOSTS.some(
+    (blocked) =>
+      normalizedHost === blocked || normalizedHost.endsWith(`.${blocked}`) || normalizedHost.includes(blocked)
+  );
+}
+
 function normalizeByProvider(image: UnsplashImage): string {
   if (image.provider === "brave") {
-    return (image.sourceUrl || image.url).split("?")[0];
+    return image.url.split("?")[0];
   }
   return image.id;
 }
@@ -173,12 +220,8 @@ function hasHint(image: UnsplashImage, hints: string[]): boolean {
   return hints.some((hint) => haystack.includes(hint));
 }
 
-function scoreImage(
-  image: UnsplashImage,
-  contextTokens: Set<string>,
-  queryPriority: Map<string, number>
-): number {
-  const haystackTokens = new Set(
+function tokenSetFromImage(image: UnsplashImage): Set<string> {
+  return new Set(
     tokenize(
       [
         image.alt,
@@ -189,19 +232,88 @@ function scoreImage(
       ].join(" ")
     )
   );
+}
 
+function countOverlap(left: Set<string>, right: Set<string>): number {
   let overlap = 0;
-  for (const token of contextTokens) {
-    if (haystackTokens.has(token)) overlap += 1;
+  for (const token of left) {
+    if (right.has(token)) overlap += 1;
   }
+  return overlap;
+}
 
+interface RelevanceSignals {
+  queryOverlap: number;
+  contextOverlap: number;
+  exactQueryMatch: boolean;
+  preferredDomainMatch: boolean;
+  hasBrandHint: boolean;
+  hasArticleHint: boolean;
+  sourceHost: string;
+}
+
+function getRelevanceSignals(
+  image: UnsplashImage,
+  contextTokens: Set<string>,
+  preferredDomains: Set<string>
+): RelevanceSignals {
+  const haystackTokens = tokenSetFromImage(image);
+  const queryTokenSet = new Set(tokenize(image.matchedQuery || ""));
+  const queryOverlap = countOverlap(queryTokenSet, haystackTokens);
+  const contextOverlap = countOverlap(contextTokens, haystackTokens);
+  const normalizedQuery = normalizeSpaces((image.matchedQuery || "").toLowerCase());
+  const normalizedText = normalizeSpaces(
+    [image.alt, image.sourceName || "", image.sourceUrl || "", image.photographer].join(" ")
+      .toLowerCase()
+  );
+  const exactQueryMatch = normalizedQuery.length >= 3 && normalizedText.includes(normalizedQuery);
+  const sourceHost = normalizeHostname(getHostname(image.sourceUrl || image.photographerUrl));
+  const preferredDomainMatch = matchesPreferredDomain(sourceHost, preferredDomains);
+
+  return {
+    queryOverlap,
+    contextOverlap,
+    exactQueryMatch,
+    preferredDomainMatch,
+    hasBrandHint: hasHint(image, BRAND_HINTS),
+    hasArticleHint: hasHint(image, ARTICLE_HINTS),
+    sourceHost,
+  };
+}
+
+function scoreImage(
+  image: UnsplashImage,
+  queryPriority: Map<string, number>,
+  signals: RelevanceSignals
+): number {
   const normalizedMatchedQuery = normalizeSpaces((image.matchedQuery || "").toLowerCase());
-  const queryScore = queryPriority.get(normalizedMatchedQuery) ?? 18;
-  const providerScore = image.provider === "brave" ? 35 : 12;
-  const articleScore = hasHint(image, ARTICLE_HINTS) ? 14 : 0;
-  const brandScore = hasHint(image, BRAND_HINTS) ? 10 : 0;
+  const queryPriorityScore = queryPriority.get(normalizedMatchedQuery) ?? 16;
+  const providerScore = image.provider === "brave" ? 8 : 6;
+  const queryOverlapScore = signals.queryOverlap * 24;
+  const exactQueryScore = signals.exactQueryMatch ? 20 : 0;
+  const contextScore = Math.min(3, signals.contextOverlap) * 5;
+  const preferredDomainScore = signals.preferredDomainMatch ? 18 : 0;
+  const articleScore = signals.hasArticleHint ? 6 : 0;
+  const brandScore = signals.hasBrandHint ? 5 : 0;
 
-  return queryScore + providerScore + overlap * 6 + articleScore + brandScore;
+  return (
+    queryPriorityScore +
+    providerScore +
+    queryOverlapScore +
+    exactQueryScore +
+    contextScore +
+    preferredDomainScore +
+    articleScore +
+    brandScore
+  );
+}
+
+function isStronglyRelevant(image: UnsplashImage, signals: RelevanceSignals): boolean {
+  if (isBlockedSourceHost(signals.sourceHost)) return false;
+  if (signals.queryOverlap >= 1 || signals.exactQueryMatch) return true;
+  if (signals.preferredDomainMatch && signals.contextOverlap >= 1) return true;
+  if (image.provider === "unsplash" && signals.contextOverlap >= 2) return true;
+  return false;
 }
 
 function mapBraveImage(query: string, item: BraveImageResult): UnsplashImage | null {
@@ -230,7 +342,7 @@ function mapBraveImage(query: string, item: BraveImageResult): UnsplashImage | n
 async function searchBraveImages(query: string, apiKey: string): Promise<UnsplashImage[]> {
   try {
     const res = await fetch(
-      `https://api.search.brave.com/res/v1/images/search?q=${encodeURIComponent(query)}&count=10&search_lang=ko`,
+      `https://api.search.brave.com/res/v1/images/search?q=${encodeURIComponent(query)}&count=8&search_lang=ko&safesearch=strict`,
       {
         headers: {
           Accept: "application/json",
@@ -243,6 +355,7 @@ async function searchBraveImages(query: string, apiKey: string): Promise<Unsplas
     if (!res.ok) return [];
 
     const data = (await res.json()) as BraveImageResponse;
+    if (data.extra?.might_be_offensive) return [];
     const results = Array.isArray(data.results) ? data.results : [];
 
     return results
@@ -314,6 +427,9 @@ export async function GET(req: NextRequest) {
 
   const queries = splitQueries(query, req.nextUrl.searchParams.get("queries"));
   const context = normalizeSpaces(req.nextUrl.searchParams.get("context") || "");
+  const preferredDomains = parsePreferredDomains(
+    req.nextUrl.searchParams.get("preferredDomains")
+  );
 
   const accessKey =
     process.env.UNSPLASH_ACCESS_KEY ||
@@ -359,17 +475,50 @@ export async function GET(req: NextRequest) {
       queryPriority.set(key, Math.max(20, 92 - index * 12));
     });
 
-    const rankedImages = deduped
-      .map((image) => {
-        const normalizedMatchedQuery = normalizeSpaces(
-          (image.matchedQuery || "").toLowerCase()
-        );
-        return {
-          ...image,
-          relevanceScore: scoreImage(image, contextTokens, queryPriority),
-          matchedQuery: normalizedMatchedQuery || image.matchedQuery,
-        };
-      })
+    const scoredImages = deduped.map((image) => {
+      const normalizedMatchedQuery = normalizeSpaces(
+        (image.matchedQuery || "").toLowerCase()
+      );
+      const normalizedImage: UnsplashImage = {
+        ...image,
+        matchedQuery: normalizedMatchedQuery || image.matchedQuery,
+      };
+      const signals = getRelevanceSignals(
+        normalizedImage,
+        contextTokens,
+        preferredDomains
+      );
+
+      return {
+        ...normalizedImage,
+        relevanceScore: scoreImage(normalizedImage, queryPriority, signals),
+        _signals: signals,
+      };
+    });
+
+    const strictCandidates = scoredImages.filter((item) =>
+      isStronglyRelevant(item, item._signals)
+    );
+    const relaxedCandidates = scoredImages.filter(
+      (item) =>
+        item._signals.queryOverlap >= 1 ||
+        item._signals.contextOverlap >= 1 ||
+        item._signals.preferredDomainMatch
+    );
+    const baselineCandidates = scoredImages.filter(
+      (item) => !isBlockedSourceHost(item._signals.sourceHost)
+    );
+
+    const selectedPool =
+      strictCandidates.length >= 3
+        ? strictCandidates
+        : relaxedCandidates.length >= 3
+          ? relaxedCandidates
+          : baselineCandidates.length > 0
+            ? baselineCandidates
+            : scoredImages;
+
+    const rankedImages = selectedPool
       .sort((a, b) => {
         const scoreGap = (b.relevanceScore || 0) - (a.relevanceScore || 0);
         if (scoreGap !== 0) return scoreGap;
@@ -378,7 +527,8 @@ export async function GET(req: NextRequest) {
         }
         return 0;
       })
-      .slice(0, 15);
+      .slice(0, 12)
+      .map(({ _signals, ...image }) => image);
 
     return NextResponse.json({ images: rankedImages });
   } catch (error) {
