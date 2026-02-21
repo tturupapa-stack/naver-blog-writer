@@ -44,6 +44,24 @@ const AI_LIKE_PHRASES = [
   "핵심만",
 ];
 
+const TRANSLATION_LIKE_TERMS = [
+  "상기",
+  "해당",
+  "기반으로",
+  "관점에서",
+  "수행",
+  "구현",
+  "도출",
+  "제고",
+  "유의미",
+  "솔루션",
+  "프로세스",
+  "인사이트",
+  "레버리지",
+  "니즈",
+  "페인포인트",
+];
+
 const SPECIFICITY_PATTERNS = [
   /\d+\s?(원|개|분|시간|일|주|개월|년|kg|cm|km|%)/g,
   /(아침|점심|저녁|출근길|퇴근길|주말|평일|매장|온라인|오프라인|실사용|직접 사용|비교해보니|체감)/g,
@@ -170,6 +188,13 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
   const aiPhraseHits = AI_LIKE_PHRASES.filter((phrase) =>
     new RegExp(escapeRegex(phrase), "i").test(fullText)
   );
+  const translationTermHits = TRANSLATION_LIKE_TERMS
+    .map((term) => ({ term, count: countMatches(fullText, term) }))
+    .filter((hit) => hit.count > 0);
+  const translationHitCount = translationTermHits.reduce(
+    (sum, hit) => sum + hit.count,
+    0
+  );
 
   const sentences = sectionsText
     .split(/[.!?]\s+|\n+/)
@@ -222,6 +247,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
     aiPhraseHits.length <= 1 &&
     repeatedSentenceStartRatio <= 0.32 &&
     ngramRepeatRatio <= 0.14;
+  const translationStylePassed = translationHitCount <= 2;
   const sentenceRhythmPassed = sentenceLengthStd >= 10;
   const specificityPassed = specificityHits >= 2;
 
@@ -232,6 +258,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
       ? Math.min(24, (repeatedSentenceStartRatio - 0.28) * 120)
       : 0;
   naturalnessScore -= ngramRepeatRatio > 0.1 ? Math.min(22, (ngramRepeatRatio - 0.1) * 180) : 0;
+  naturalnessScore -= translationHitCount > 2 ? Math.min(20, (translationHitCount - 2) * 5) : 0;
   naturalnessScore -= sentenceLengthStd < 8 ? 15 : sentenceLengthStd < 10 ? 8 : 0;
   naturalnessScore -= specificityHits < 2 ? 10 : 0;
   naturalnessScore -= avgSentenceLength < 22 || avgSentenceLength > 140 ? 8 : 0;
@@ -250,7 +277,12 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
   ];
   const seoScore = round((seoChecks.filter(Boolean).length / seoChecks.length) * 100);
 
-  const complianceSoftChecks = [aiStylePassed, sentenceRhythmPassed, specificityPassed];
+  const complianceSoftChecks = [
+    aiStylePassed,
+    translationStylePassed,
+    sentenceRhythmPassed,
+    specificityPassed,
+  ];
   const complianceSoftScore = round(
     (complianceSoftChecks.filter(Boolean).length / complianceSoftChecks.length) * 100
   );
@@ -358,6 +390,18 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
       isHard: false,
     }),
     makeItem({
+      label: "번역투 표현 점검",
+      passed: translationStylePassed,
+      detail: translationStylePassed
+        ? "번역투/딱딱한 어휘가 과도하지 않습니다."
+        : `감지 ${translationHitCount}회: ${translationTermHits
+            .map((hit) => `${hit.term}(${hit.count})`)
+            .slice(0, 6)
+            .join(", ")}`,
+      bucket: "naturalness",
+      isHard: false,
+    }),
+    makeItem({
       label: "문장 리듬 다양성",
       passed: sentenceRhythmPassed,
       detail: `문장 길이 표준편차 ${round(sentenceLengthStd)} (평균 ${round(
@@ -393,6 +437,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
     contentLength < MIN_CONTENT_LENGTH ||
     contentLength > MAX_CONTENT_LENGTH ||
     sectionCount < 5 ||
+    !translationStylePassed ||
     selectionScore < 70 ||
     naturalnessScore < 65
   ) {

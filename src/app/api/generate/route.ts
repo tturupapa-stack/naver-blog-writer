@@ -15,8 +15,8 @@ export const maxDuration = 60;
 const PIPELINE_VERSION = "v3-depth-boost";
 const DRAFT_CANDIDATE_COUNT = 3;
 const MAX_COMPLIANCE_PASSES = 3;
-const MIN_NATURALNESS_TARGET = 68;
-const SOFT_FOCUS_LIMIT = 3;
+const MIN_NATURALNESS_TARGET = 72;
+const SOFT_FOCUS_LIMIT = 4;
 const DEFAULT_TEXT_MODEL = "gpt-4o";
 const MIN_SECTION_TARGET = 5;
 const MIN_BODY_CHAR_TARGET = 2200;
@@ -25,6 +25,12 @@ const DEPTH_FIX_HINTS = [
   "구체성/맥락 표현",
   "소제목 개수",
   "SEO: 소제목 키워드 반영",
+] as const;
+const STYLE_FIX_HINTS = [
+  "번역투 표현 점검",
+  "AI 티 문체 점검",
+  "문장 리듬 다양성",
+  "구체성/맥락 표현",
 ] as const;
 
 interface RawParsedBlog {
@@ -400,6 +406,22 @@ function buildAutoDepthFixHints(candidate: Candidate): string[] {
   }
 
   return uniqueStrings([...DEPTH_FIX_HINTS, ...hints]);
+}
+
+function buildAutoStyleFixHints(review: ReviewReport): string[] {
+  const warnLabels = review.items
+    .filter(
+      (item) =>
+        item.status === "warn" &&
+        STYLE_FIX_HINTS.some((label) => label === item.label)
+    )
+    .map((item) => item.label);
+
+  if (review.naturalnessScore < MIN_NATURALNESS_TARGET) {
+    return uniqueStrings([...warnLabels, ...STYLE_FIX_HINTS]);
+  }
+
+  return uniqueStrings(warnLabels);
 }
 
 function pickSoftFocusLabels(review: ReviewReport): string[] {
@@ -819,9 +841,11 @@ export async function POST(req: NextRequest) {
 
     for (let pass = 0; pass < MAX_COMPLIANCE_PASSES; pass++) {
       const autoDepthFixHints = buildAutoDepthFixHints(bestCandidate);
+      const autoStyleFixHints = buildAutoStyleFixHints(bestCandidate.review);
       const effectiveFixHints = uniqueStrings([
         ...requestedFixHints,
         ...autoDepthFixHints,
+        ...autoStyleFixHints,
       ]);
 
       const shouldFixHard = !bestCandidate.review.hardPass;
@@ -830,7 +854,8 @@ export async function POST(req: NextRequest) {
         effectiveFixHints
       );
       const shouldBoostNaturalness =
-        bestCandidate.review.naturalnessScore < MIN_NATURALNESS_TARGET;
+        bestCandidate.review.naturalnessScore < MIN_NATURALNESS_TARGET ||
+        autoStyleFixHints.length > 0;
       const shouldBoostDepth = autoDepthFixHints.length > 0;
 
       if (
