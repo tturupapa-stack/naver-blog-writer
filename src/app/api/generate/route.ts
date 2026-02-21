@@ -12,7 +12,7 @@ import {
 } from "@/lib/types";
 
 export const maxDuration = 60;
-const PIPELINE_VERSION = "v3-depth-boost";
+const PIPELINE_VERSION = "v4-fact-guard";
 const DRAFT_CANDIDATE_COUNT = 3;
 const MAX_COMPLIANCE_PASSES = 3;
 const MIN_NATURALNESS_TARGET = 72;
@@ -27,6 +27,7 @@ const DEPTH_FIX_HINTS = [
   "SEO: 소제목 키워드 반영",
 ] as const;
 const STYLE_FIX_HINTS = [
+  "정확도/근거 기반 표현",
   "번역투 표현 점검",
   "AI 티 문체 점검",
   "문장 리듬 다양성",
@@ -305,6 +306,7 @@ function makeCandidate(
   parsed: ParsedBlog,
   keyword: string,
   tone: ToneType,
+  searchResults: SearchResult[],
   previousContent = ""
 ): Candidate {
   const sections = parsed.sections.map((section) => ({
@@ -319,6 +321,7 @@ function makeCandidate(
     sections,
     tags: parsed.tags,
     tone,
+    searchResults,
   });
 
   const contentText = serializeBlog(parsed);
@@ -334,6 +337,12 @@ function makeCandidate(
     bodyCharCount: depth.bodyCharCount,
     depthSatisfied: depth.depthSatisfied,
   };
+}
+
+function isFactualWarning(review: ReviewReport): boolean {
+  return review.items.some(
+    (item) => item.label === "정확도/근거 기반 표현" && item.status === "warn"
+  );
 }
 
 function betterCandidate(current: Candidate | null, candidate: Candidate): Candidate {
@@ -774,7 +783,10 @@ export async function POST(req: NextRequest) {
       if (Array.isArray(searchData.results) && searchData.results.length > 0) {
         searchResults = searchData.results.slice(0, 5);
         searchContext = searchResults
-          .map((result: SearchResult) => `- ${result.title}: ${result.description}`)
+          .map(
+            (result: SearchResult, index: number) =>
+              `${index + 1}. ${result.title}\n- 요약: ${result.description}\n- 출처: ${result.url}`
+          )
           .join("\n");
       }
     } catch {
@@ -823,7 +835,7 @@ export async function POST(req: NextRequest) {
           safeParsedBlog(parseJsonFromModel(rawContent), keyword),
           keyword
         );
-        const candidate = makeCandidate(parsed, keyword, selectedTone);
+        const candidate = makeCandidate(parsed, keyword, selectedTone, searchResults);
         bestCandidate = betterCandidate(bestCandidate, candidate);
       } catch {
         // Skip unparsable candidate and keep other candidates
@@ -910,6 +922,7 @@ export async function POST(req: NextRequest) {
           refinedParsed,
           keyword,
           selectedTone,
+          searchResults,
           bestCandidate.contentText
         );
 
@@ -980,11 +993,15 @@ export async function POST(req: NextRequest) {
       keyword,
     });
 
-    const qualityPassed = review.hardPass && bestCandidate.depthSatisfied;
+    const factualWarn = isFactualWarning(review);
+    const qualityPassed =
+      review.hardPass && bestCandidate.depthSatisfied && !factualWarn;
     const qualityMessage = !review.hardPass
       ? `핵심 안전 규칙 미통과: ${review.hardFailLabels.join(", ")}`
       : !bestCandidate.depthSatisfied
         ? `안전 규칙은 통과했지만 본문 깊이가 부족합니다. (본문 ${bestCandidate.bodyCharCount}자 / 소제목 ${bestCandidate.sectionCount}개)`
+        : factualWarn
+          ? "문체/구조는 통과했지만 근거가 약한 사실 문장이 감지되었습니다. 검증 가능 정보 중심으로 재생성이 필요합니다."
         : review.naturalnessScore >= MIN_NATURALNESS_TARGET
           ? "핵심 안전 규칙과 본문 깊이 기준을 통과했고 자연스러움도 충족했습니다."
           : `핵심 안전 규칙과 본문 깊이는 통과했지만 자연스러움 점수(${review.naturalnessScore})가 권장 기준(${MIN_NATURALNESS_TARGET})보다 낮습니다.`;
@@ -994,6 +1011,7 @@ export async function POST(req: NextRequest) {
       draftCandidates: draftCompletion.choices.length,
       compliancePasses,
       hardPass: review.hardPass,
+      factualWarn,
       depthSatisfied: bestCandidate.depthSatisfied,
       sectionCount: bestCandidate.sectionCount,
       bodyCharCount: bestCandidate.bodyCharCount,

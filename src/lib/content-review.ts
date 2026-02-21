@@ -1,6 +1,6 @@
-import { ReviewItem, ReviewReport, ToneType } from "./types";
+import { ReviewItem, ReviewReport, SearchResult, ToneType } from "./types";
 
-const PIPELINE_VERSION = "v3-depth-boost";
+const PIPELINE_VERSION = "v4-fact-guard";
 const MIN_CONTENT_LENGTH = 2200;
 const MAX_CONTENT_LENGTH = 4500;
 
@@ -62,6 +62,45 @@ const TRANSLATION_LIKE_TERMS = [
   "페인포인트",
 ];
 
+const FACT_CLAIM_CUE_PATTERNS = [
+  /(출시|출시일|발표|공식|통계|연구|보도|리포트|인증|검증|1위|최저|최고|점유율|가격|요금|비용)/,
+  /\d{4}\s*년/,
+  /\d+\s*(원|만원|천원|%|개|명|시간|분|일|주|개월|년|위|배)/,
+];
+
+const FACT_HEDGING_TERMS = [
+  "가능성",
+  "경우가 많",
+  "체감상",
+  "개인차",
+  "확인 필요",
+  "공식 페이지",
+  "다를 수",
+  "추정",
+];
+
+const FACT_TOKEN_STOPWORDS = new Set([
+  "그리고",
+  "하지만",
+  "또한",
+  "정리",
+  "가이드",
+  "추천",
+  "비교",
+  "포인트",
+  "기준",
+  "콘텐츠",
+  "사용",
+  "문장",
+  "경우",
+  "정보",
+  "최신",
+  "공식",
+  "확인",
+  "페이지",
+  "블로그",
+]);
+
 const SPECIFICITY_PATTERNS = [
   /\d+\s?(원|개|분|시간|일|주|개월|년|kg|cm|km|%)/g,
   /(아침|점심|저녁|출근길|퇴근길|주말|평일|매장|온라인|오프라인|실사용|직접 사용|비교해보니|체감)/g,
@@ -78,6 +117,14 @@ interface ReviewInput {
   }[];
   tags: string[];
   tone?: ToneType;
+  searchResults?: SearchResult[];
+}
+
+interface FactualGroundingResult {
+  passed: boolean;
+  claimCount: number;
+  unsupportedCount: number;
+  unsupportedExamples: string[];
 }
 
 function escapeRegex(value: string): string {
@@ -136,6 +183,100 @@ function repeatedNgramRatio(text: string, n: number): number {
   );
 
   return repeated / Math.max(totalNgrams, 1);
+}
+
+function normalizeFactText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function tokenizeFactText(value: string): string[] {
+  return normalizeFactText(value)
+    .split(/[^a-z0-9가-힣]+/)
+    .map((token) => token.trim())
+    .filter(
+      (token) =>
+        token.length >= 2 &&
+        !FACT_TOKEN_STOPWORDS.has(token) &&
+        !/^\d+$/.test(token)
+    );
+}
+
+function extractNumberTokens(value: string): string[] {
+  const matches = value.match(/\d[\d.,]*/g) || [];
+  return Array.from(new Set(matches.map((token) => token.replace(/[,\s]/g, ""))));
+}
+
+function evaluateFactualGrounding(
+  fullText: string,
+  searchResults: SearchResult[] | undefined
+): FactualGroundingResult {
+  const safeSearchResults = Array.isArray(searchResults) ? searchResults : [];
+  if (safeSearchResults.length === 0) {
+    return {
+      passed: false,
+      claimCount: 1,
+      unsupportedCount: 1,
+      unsupportedExamples: ["검색 근거가 없어 사실 검증이 어렵습니다."],
+    };
+  }
+
+  const evidenceText = normalizeFactText(
+    safeSearchResults
+      .map((result) => `${result.title || ""} ${result.description || ""}`)
+      .join(" ")
+  );
+  const evidenceTokens = new Set(
+    safeSearchResults.flatMap((result) =>
+      tokenizeFactText(`${result.title || ""} ${result.description || ""}`)
+    )
+  );
+
+  const rawSentences = fullText
+    .split(/[.!?]\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 14);
+
+  const claimSentences = rawSentences.filter((sentence) =>
+    FACT_CLAIM_CUE_PATTERNS.some((pattern) => pattern.test(sentence))
+  );
+
+  if (claimSentences.length === 0) {
+    return {
+      passed: true,
+      claimCount: 0,
+      unsupportedCount: 0,
+      unsupportedExamples: [],
+    };
+  }
+
+  const unsupported: string[] = [];
+
+  for (const sentence of claimSentences) {
+    const sentenceTokens = tokenizeFactText(sentence);
+    const overlapCount = sentenceTokens.filter((token) => evidenceTokens.has(token)).length;
+    const numberTokens = extractNumberTokens(sentence);
+    const missingNumber = numberTokens.some(
+      (token) => !evidenceText.includes(token)
+    );
+    const hasHedging = FACT_HEDGING_TERMS.some((term) => sentence.includes(term));
+    const likelyUnsupported =
+      (!hasHedging && missingNumber) || (!hasHedging && overlapCount < 2);
+
+    if (likelyUnsupported) {
+      unsupported.push(sentence.slice(0, 120));
+    }
+  }
+
+  const unsupportedCount = unsupported.length;
+  const passed =
+    unsupportedCount <= Math.max(1, Math.floor(claimSentences.length * 0.2));
+
+  return {
+    passed,
+    claimCount: claimSentences.length,
+    unsupportedCount,
+    unsupportedExamples: unsupported.slice(0, 3),
+  };
 }
 
 function makeItem(params: {
@@ -239,6 +380,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
     (sum, pattern) => sum + (fullText.match(pattern)?.length ?? 0),
     0
   );
+  const factualGrounding = evaluateFactualGrounding(fullText, input.searchResults);
 
   const lowQualityPatternPassed = !repeatedPunctuation && exclamationCount <= 12;
   const bannedWordPassed = foundBannedWords.length === 0;
@@ -250,6 +392,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
   const translationStylePassed = translationHitCount <= 2;
   const sentenceRhythmPassed = sentenceLengthStd >= 10;
   const specificityPassed = specificityHits >= 2;
+  const factualPassed = factualGrounding.passed;
 
   let naturalnessScore = 100;
   naturalnessScore -= Math.max(0, aiPhraseHits.length - 1) * 11;
@@ -259,6 +402,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
       : 0;
   naturalnessScore -= ngramRepeatRatio > 0.1 ? Math.min(22, (ngramRepeatRatio - 0.1) * 180) : 0;
   naturalnessScore -= translationHitCount > 2 ? Math.min(20, (translationHitCount - 2) * 5) : 0;
+  naturalnessScore -= factualGrounding.unsupportedCount > 0 ? Math.min(20, factualGrounding.unsupportedCount * 4) : 0;
   naturalnessScore -= sentenceLengthStd < 8 ? 15 : sentenceLengthStd < 10 ? 8 : 0;
   naturalnessScore -= specificityHits < 2 ? 10 : 0;
   naturalnessScore -= avgSentenceLength < 22 || avgSentenceLength > 140 ? 8 : 0;
@@ -280,6 +424,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
   const complianceSoftChecks = [
     aiStylePassed,
     translationStylePassed,
+    factualPassed,
     sentenceRhythmPassed,
     specificityPassed,
   ];
@@ -402,6 +547,15 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
       isHard: false,
     }),
     makeItem({
+      label: "정확도/근거 기반 표현",
+      passed: factualPassed,
+      detail: factualPassed
+        ? `검증 대상 ${factualGrounding.claimCount}문장 중 근거 취약 ${factualGrounding.unsupportedCount}문장`
+        : `근거 취약 ${factualGrounding.unsupportedCount}/${factualGrounding.claimCount}문장: ${factualGrounding.unsupportedExamples.join(" | ")}`,
+      bucket: "complianceSoft",
+      isHard: false,
+    }),
+    makeItem({
       label: "문장 리듬 다양성",
       passed: sentenceRhythmPassed,
       detail: `문장 길이 표준편차 ${round(sentenceLengthStd)} (평균 ${round(
@@ -438,6 +592,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
     contentLength > MAX_CONTENT_LENGTH ||
     sectionCount < 5 ||
     !translationStylePassed ||
+    !factualPassed ||
     selectionScore < 70 ||
     naturalnessScore < 65
   ) {
