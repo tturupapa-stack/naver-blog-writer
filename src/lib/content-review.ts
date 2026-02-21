@@ -1,6 +1,8 @@
 import { ReviewItem, ReviewReport, ToneType } from "./types";
 
-const PIPELINE_VERSION = "v2-two-pass";
+const PIPELINE_VERSION = "v3-depth-boost";
+const MIN_CONTENT_LENGTH = 2200;
+const MAX_CONTENT_LENGTH = 4500;
 
 const BANNED_WORDS = [
   "무조건",
@@ -148,6 +150,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
 
   const containsKeywordInTitle = countMatches(input.title, input.keyword) > 0;
   const containsKeywordInIntro = countMatches(introText, input.keyword) > 0;
+  const sectionCount = input.sections.length;
   const headingKeywordCount = input.sections.filter((s) =>
     s.heading ? countMatches(s.heading, input.keyword) > 0 : false
   ).length;
@@ -239,9 +242,10 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
   const seoChecks = [
     containsKeywordInTitle,
     containsKeywordInIntro,
+    sectionCount >= 5 && sectionCount <= 6,
     headingKeywordCount >= 2,
     keywordDensity >= 0.6 && keywordDensity <= 3.2,
-    contentLength >= 1600 && contentLength <= 3800,
+    contentLength >= MIN_CONTENT_LENGTH && contentLength <= MAX_CONTENT_LENGTH,
     input.tags.length >= 5 && input.tags.length <= 8,
   ];
   const seoScore = round((seoChecks.filter(Boolean).length / seoChecks.length) * 100);
@@ -252,7 +256,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
   );
 
   const selectionScore = round(
-    0.55 * naturalnessScore + 0.3 * complianceSoftScore + 0.15 * seoScore
+    0.5 * naturalnessScore + 0.25 * complianceSoftScore + 0.25 * seoScore
   );
 
   const items: ReviewItem[] = [
@@ -302,6 +306,16 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
       isHard: true,
     }),
     makeItem({
+      label: "소제목 개수",
+      passed: sectionCount >= 5 && sectionCount <= 6,
+      detail:
+        sectionCount >= 5 && sectionCount <= 6
+          ? `소제목 ${sectionCount}개`
+          : `현재 소제목 ${sectionCount}개 (권장 5~6개)`,
+      bucket: "seo",
+      isHard: false,
+    }),
+    makeItem({
       label: "SEO: 소제목 키워드 반영",
       passed: headingKeywordCount >= 2,
       detail:
@@ -320,7 +334,7 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
     }),
     makeItem({
       label: "본문 길이",
-      passed: contentLength >= 1600 && contentLength <= 3800,
+      passed: contentLength >= MIN_CONTENT_LENGTH && contentLength <= MAX_CONTENT_LENGTH,
       detail: `글자 수 ${contentLength}자`,
       bucket: "seo",
       isHard: false,
@@ -375,7 +389,13 @@ export function reviewGeneratedContent(input: ReviewInput): ReviewReport {
   let overallStatus: ReviewReport["overallStatus"] = "safe";
   if (!hardPass) {
     overallStatus = "risk";
-  } else if (selectionScore < 70 || naturalnessScore < 65) {
+  } else if (
+    contentLength < MIN_CONTENT_LENGTH ||
+    contentLength > MAX_CONTENT_LENGTH ||
+    sectionCount < 5 ||
+    selectionScore < 70 ||
+    naturalnessScore < 65
+  ) {
     overallStatus = "caution";
   }
 

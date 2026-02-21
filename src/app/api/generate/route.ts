@@ -12,12 +12,20 @@ import {
 } from "@/lib/types";
 
 export const maxDuration = 60;
-const PIPELINE_VERSION = "v2-two-pass";
+const PIPELINE_VERSION = "v3-depth-boost";
 const DRAFT_CANDIDATE_COUNT = 3;
-const MAX_COMPLIANCE_PASSES = 2;
+const MAX_COMPLIANCE_PASSES = 3;
 const MIN_NATURALNESS_TARGET = 68;
 const SOFT_FOCUS_LIMIT = 3;
 const DEFAULT_TEXT_MODEL = "gpt-4o";
+const MIN_SECTION_TARGET = 5;
+const MIN_BODY_CHAR_TARGET = 2200;
+const DEPTH_FIX_HINTS = [
+  "본문 길이",
+  "구체성/맥락 표현",
+  "소제목 개수",
+  "SEO: 소제목 키워드 반영",
+] as const;
 
 interface RawParsedBlog {
   title?: string;
@@ -41,6 +49,9 @@ interface Candidate {
   review: ReviewReport;
   contentText: string;
   changeRatio: number;
+  sectionCount: number;
+  bodyCharCount: number;
+  depthSatisfied: boolean;
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -265,6 +276,25 @@ function textChangeRatio(before: string, after: string): number {
   return 1 - overlap / denominator;
 }
 
+function summarizeDepth(parsed: ParsedBlog): {
+  sectionCount: number;
+  bodyCharCount: number;
+  depthSatisfied: boolean;
+} {
+  const sectionCount = parsed.sections.length;
+  const bodyCharCount = parsed.sections.reduce(
+    (sum, section) => sum + section.body.replace(/\s+/g, " ").trim().length,
+    0
+  );
+
+  return {
+    sectionCount,
+    bodyCharCount,
+    depthSatisfied:
+      sectionCount >= MIN_SECTION_TARGET && bodyCharCount >= MIN_BODY_CHAR_TARGET,
+  };
+}
+
 function makeCandidate(
   parsed: ParsedBlog,
   keyword: string,
@@ -286,6 +316,7 @@ function makeCandidate(
   });
 
   const contentText = serializeBlog(parsed);
+  const depth = summarizeDepth(parsed);
 
   return {
     parsed,
@@ -293,6 +324,9 @@ function makeCandidate(
     review,
     contentText,
     changeRatio: previousContent ? textChangeRatio(previousContent, contentText) : 0,
+    sectionCount: depth.sectionCount,
+    bodyCharCount: depth.bodyCharCount,
+    depthSatisfied: depth.depthSatisfied,
   };
 }
 
@@ -308,6 +342,19 @@ function betterCandidate(current: Candidate | null, candidate: Candidate): Candi
       return candidate.review.hardFailLabels.length < current.review.hardFailLabels.length
         ? candidate
         : current;
+    }
+  }
+
+  if (current.depthSatisfied !== candidate.depthSatisfied) {
+    return candidate.depthSatisfied ? candidate : current;
+  }
+
+  if (!current.depthSatisfied && !candidate.depthSatisfied) {
+    if (candidate.sectionCount !== current.sectionCount) {
+      return candidate.sectionCount > current.sectionCount ? candidate : current;
+    }
+    if (candidate.bodyCharCount !== current.bodyCharCount) {
+      return candidate.bodyCharCount > current.bodyCharCount ? candidate : current;
     }
   }
 
@@ -330,6 +377,29 @@ function betterCandidate(current: Candidate | null, candidate: Candidate): Candi
   }
 
   return current;
+}
+
+function buildAutoDepthFixHints(candidate: Candidate): string[] {
+  if (candidate.depthSatisfied) return [];
+
+  const hints: string[] = [];
+  if (candidate.sectionCount < MIN_SECTION_TARGET) {
+    hints.push("소제목 개수");
+    hints.push("SEO: 소제목 키워드 반영");
+  }
+  if (candidate.bodyCharCount < MIN_BODY_CHAR_TARGET) {
+    hints.push("본문 길이");
+    hints.push("구체성/맥락 표현");
+  }
+
+  const lengthWarn = candidate.review.items.some(
+    (item) => item.label === "본문 길이" && item.status === "warn"
+  );
+  if (lengthWarn) {
+    hints.push("본문 길이");
+  }
+
+  return uniqueStrings([...DEPTH_FIX_HINTS, ...hints]);
 }
 
 function pickSoftFocusLabels(review: ReviewReport): string[] {
@@ -374,6 +444,18 @@ const IMAGE_QUERY_STOPWORDS = new Set([
   "정리",
 ]);
 
+const ARTICLE_IMAGE_BLOCKED_HOSTS = [
+  "youtube.com",
+  "youtu.be",
+  "instagram.com",
+  "facebook.com",
+  "tiktok.com",
+  "pinterest.com",
+  "reddit.com",
+];
+const ARTICLE_FETCH_TIMEOUT_MS = 4500;
+const ARTICLE_HTML_MAX_LENGTH = 200_000;
+
 interface ImagesApiResponse {
   images?: UnsplashImage[];
 }
@@ -394,6 +476,15 @@ function sanitizeImageQuery(value: string): string {
   return normalizeText(withoutDashTail).slice(0, 64).trim();
 }
 
+function createStableId(seed: string): string {
+  let hash = 0;
+  for (let idx = 0; idx < seed.length; idx++) {
+    hash = (hash << 5) - hash + seed.charCodeAt(idx);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
 function isMeaningfulImageQuery(query: string): boolean {
   const tokens = query
     .toLowerCase()
@@ -401,6 +492,63 @@ function isMeaningfulImageQuery(query: string): boolean {
     .map((token) => token.trim())
     .filter((token) => token.length >= 2 && !IMAGE_QUERY_STOPWORDS.has(token));
   return tokens.length > 0;
+}
+
+function isBlockedArticleHost(hostname: string): boolean {
+  if (!hostname) return true;
+  return ARTICLE_IMAGE_BLOCKED_HOSTS.some(
+    (blocked) => hostname === blocked || hostname.endsWith(`.${blocked}`)
+  );
+}
+
+function decodeHtmlEntity(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function extractMetaContent(html: string, keys: string[]): string {
+  const normalizedKeys = new Set(keys.map((key) => key.toLowerCase()));
+  const tags = html.match(/<meta\s+[^>]*>/gi) || [];
+
+  for (const tag of tags) {
+    const attrs = Array.from(
+      tag.matchAll(/([a-zA-Z_:.-]+)\s*=\s*["']([^"']*)["']/g)
+    );
+    let metaKey = "";
+    let content = "";
+
+    for (const attr of attrs) {
+      const attrName = attr[1].toLowerCase();
+      const attrValue = decodeHtmlEntity(attr[2].trim());
+      if ((attrName === "property" || attrName === "name" || attrName === "itemprop") && attrValue) {
+        metaKey = attrValue.toLowerCase();
+      }
+      if (attrName === "content" && attrValue) {
+        content = attrValue;
+      }
+    }
+
+    if (metaKey && content && normalizedKeys.has(metaKey)) {
+      return content;
+    }
+  }
+
+  return "";
+}
+
+function resolveUrl(urlLike: string, baseUrl: string): string {
+  if (!urlLike) return "";
+  try {
+    const resolved = new URL(urlLike, baseUrl).toString();
+    if (!/^https?:\/\//i.test(resolved)) return "";
+    return resolved;
+  } catch {
+    return "";
+  }
 }
 
 function looksLikeBrandOrProduct(query: string): boolean {
@@ -416,7 +564,6 @@ function looksLikeBrandOrProduct(query: string): boolean {
 function buildImageQueries(params: {
   keyword: string;
   parsed: ParsedBlog;
-  searchResults: SearchResult[];
 }): string[] {
   const { keyword, parsed } = params;
   const normalizedKeyword = sanitizeImageQuery(keyword);
@@ -474,24 +621,104 @@ function hostnameFromUrl(value: string): string {
   }
 }
 
-function pickTopRelevantImages(images: UnsplashImage[], limit: number): UnsplashImage[] {
-  if (images.length <= limit) return images.slice(0, limit);
+async function fetchArticleImageFromSearchResult(
+  result: SearchResult,
+  keyword: string
+): Promise<UnsplashImage | null> {
+  const sourceUrl = result.url?.trim();
+  if (!sourceUrl) return null;
+
+  const sourceHost = hostnameFromUrl(sourceUrl);
+  if (!sourceHost || isBlockedArticleHost(sourceHost)) return null;
+
+  try {
+    const response = await fetch(sourceUrl, {
+      redirect: "follow",
+      cache: "no-store",
+      signal: AbortSignal.timeout(ARTICLE_FETCH_TIMEOUT_MS),
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "accept-language": "ko,en;q=0.8",
+      },
+    });
+
+    if (!response.ok) return null;
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.toLowerCase().includes("text/html")) return null;
+
+    const html = (await response.text()).slice(0, ARTICLE_HTML_MAX_LENGTH);
+    const rawImage =
+      extractMetaContent(html, ["og:image", "og:image:url"]) ||
+      extractMetaContent(html, ["twitter:image", "twitter:image:src"]) ||
+      extractMetaContent(html, ["image"]);
+    const imageUrl = resolveUrl(rawImage, response.url || sourceUrl);
+    if (!imageUrl || imageUrl.toLowerCase().endsWith(".svg")) return null;
+
+    const metaTitle =
+      extractMetaContent(html, ["og:title", "twitter:title"]) || result.title || keyword;
+    const alt = sanitizeImageQuery(metaTitle) || sanitizeImageQuery(result.title) || keyword;
+    const stableSeed = `${sourceUrl}|${imageUrl}`;
+
+    return {
+      id: `article-${createStableId(stableSeed)}`,
+      url: imageUrl,
+      thumbUrl: imageUrl,
+      downloadUrl: imageUrl,
+      alt,
+      photographer: sourceHost,
+      photographerUrl: sourceUrl,
+      provider: "brave",
+      sourceName: sourceHost,
+      sourceUrl,
+      matchedQuery: sanitizeImageQuery(keyword),
+      relevanceScore: 320,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchArticleImagesFromSearchResults(
+  searchResults: SearchResult[],
+  keyword: string
+): Promise<UnsplashImage[]> {
+  const targets = searchResults.slice(0, 4);
+  const results = await Promise.all(
+    targets.map((item) => fetchArticleImageFromSearchResult(item, keyword))
+  );
+  return results.filter((item): item is UnsplashImage => item !== null);
+}
+
+function pickTopRelevantImages(
+  images: UnsplashImage[],
+  limit: number,
+  preferredDomains: string[]
+): UnsplashImage[] {
+  if (images.length === 0 || limit <= 0) return [];
+
+  const preferredDomainSet = new Set(preferredDomains);
+  const sorted = [...images].sort((a, b) => {
+    const aHost = hostnameFromUrl(a.sourceUrl || a.photographerUrl);
+    const bHost = hostnameFromUrl(b.sourceUrl || b.photographerUrl);
+    const aPreferred = preferredDomainSet.has(aHost) ? 1 : 0;
+    const bPreferred = preferredDomainSet.has(bHost) ? 1 : 0;
+    if (aPreferred !== bPreferred) return bPreferred - aPreferred;
+    return (b.relevanceScore || 0) - (a.relevanceScore || 0);
+  });
 
   const selected: UnsplashImage[] = [];
-  const usedQueries = new Set<string>();
+  const usedImageUrls = new Set<string>();
 
-  for (const image of images) {
+  for (const image of sorted) {
     if (selected.length >= limit) break;
-    const matchedQuery = (image.matchedQuery || "").trim();
-    if (!matchedQuery || usedQueries.has(matchedQuery)) continue;
+    const imageUrlKey = (image.url || image.id).split("?")[0];
+    if (!imageUrlKey || usedImageUrls.has(imageUrlKey)) continue;
+    const host = hostnameFromUrl(image.sourceUrl || image.photographerUrl);
+    const minimumScore = preferredDomainSet.has(host) ? 90 : 130;
+    if ((image.relevanceScore || 0) < minimumScore) continue;
     selected.push(image);
-    usedQueries.add(matchedQuery);
-  }
-
-  for (const image of images) {
-    if (selected.length >= limit) break;
-    if (selected.includes(image)) continue;
-    selected.push(image);
+    usedImageUrls.add(imageUrlKey);
   }
 
   return selected;
@@ -553,8 +780,8 @@ export async function POST(req: NextRequest) {
       request: {
         messages: [{ role: "user", content: draftPrompt }],
         n: DRAFT_CANDIDATE_COUNT,
-        temperature: 0.85,
-        top_p: 0.9,
+        temperature: 0.72,
+        top_p: 0.95,
         frequency_penalty: 0.3,
         presence_penalty: 0.2,
         max_tokens: 4000,
@@ -591,15 +818,27 @@ export async function POST(req: NextRequest) {
     let compliancePasses = 0;
 
     for (let pass = 0; pass < MAX_COMPLIANCE_PASSES; pass++) {
+      const autoDepthFixHints = buildAutoDepthFixHints(bestCandidate);
+      const effectiveFixHints = uniqueStrings([
+        ...requestedFixHints,
+        ...autoDepthFixHints,
+      ]);
+
       const shouldFixHard = !bestCandidate.review.hardPass;
       const shouldFixRequested = !requestedHintsSatisfied(
         bestCandidate.review,
-        requestedFixHints
+        effectiveFixHints
       );
       const shouldBoostNaturalness =
         bestCandidate.review.naturalnessScore < MIN_NATURALNESS_TARGET;
+      const shouldBoostDepth = autoDepthFixHints.length > 0;
 
-      if (!shouldFixHard && !shouldFixRequested && !shouldBoostNaturalness) {
+      if (
+        !shouldFixHard &&
+        !shouldFixRequested &&
+        !shouldBoostNaturalness &&
+        !shouldBoostDepth
+      ) {
         break;
       }
 
@@ -612,7 +851,8 @@ export async function POST(req: NextRequest) {
         previousJson: JSON.stringify(bestCandidate.parsed),
         hardFailLabels: bestCandidate.review.hardFailLabels,
         softFocusLabels: pickSoftFocusLabels(bestCandidate.review),
-        requestedFixHints,
+        requestedFixHints: effectiveFixHints,
+        allowExpansion: shouldBoostDepth,
       });
 
       try {
@@ -658,7 +898,7 @@ export async function POST(req: NextRequest) {
     const review = bestCandidate.review;
     const sections = bestCandidate.sections;
 
-    const imageQueries = buildImageQueries({ keyword, parsed, searchResults });
+    const imageQueries = buildImageQueries({ keyword, parsed });
     const imageContext = buildImageContext({ keyword, parsed, searchResults });
     const preferredDomains = uniqueStrings(
       searchResults
@@ -666,6 +906,22 @@ export async function POST(req: NextRequest) {
         .filter(Boolean)
     ).slice(0, 5);
     const allImages: UnsplashImage[] = [];
+    const seenImageKeys = new Set<string>();
+
+    const pushUniqueImages = (images: UnsplashImage[]) => {
+      for (const image of images) {
+        const imageKey = `${image.provider || "unsplash"}:${(image.url || image.id).split("?")[0]}`;
+        if (!imageKey || seenImageKeys.has(imageKey)) continue;
+        seenImageKeys.add(imageKey);
+        allImages.push(image);
+      }
+    };
+
+    const articleImages = await fetchArticleImagesFromSearchResults(
+      searchResults,
+      keyword
+    );
+    pushUniqueImages(articleImages);
 
     try {
       const origin = req.nextUrl.origin;
@@ -679,24 +935,18 @@ export async function POST(req: NextRequest) {
       }
       const imageRes = await fetch(`${origin}/api/images?${params.toString()}`);
       const imageData = (await imageRes.json()) as ImagesApiResponse;
+      pushUniqueImages(imageData.images || []);
 
-      const seen = new Set<string>();
-      for (const image of imageData.images || []) {
-        const dedupeKey = `${image.provider || "unsplash"}:${image.sourceUrl || image.url || image.id}`;
-        if (seen.has(dedupeKey)) continue;
-        seen.add(dedupeKey);
-        allImages.push(image);
-      }
-
-      allImages.sort(
-        (a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0)
-      );
     } catch {
       // Images are optional
     }
 
-    const selectedImages = pickTopRelevantImages(allImages, 3);
-    const thumbnail = allImages[0] || null;
+    allImages.sort(
+      (a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0)
+    );
+
+    const selectedImages = pickTopRelevantImages(allImages, 3, preferredDomains);
+    const thumbnail = selectedImages[0] || allImages[0] || null;
 
     const html = buildNaverHtml({
       title: parsed.title,
@@ -705,18 +955,23 @@ export async function POST(req: NextRequest) {
       keyword,
     });
 
-    const qualityPassed = review.hardPass;
-    const qualityMessage = qualityPassed
-      ? review.naturalnessScore >= MIN_NATURALNESS_TARGET
-        ? "핵심 안전 규칙을 통과했고 자연스러움 기준도 충족했습니다."
-        : `핵심 안전 규칙은 통과했지만 자연스러움 점수(${review.naturalnessScore})가 권장 기준(${MIN_NATURALNESS_TARGET})보다 낮습니다.`
-      : `핵심 안전 규칙 미통과: ${review.hardFailLabels.join(", ")}`;
+    const qualityPassed = review.hardPass && bestCandidate.depthSatisfied;
+    const qualityMessage = !review.hardPass
+      ? `핵심 안전 규칙 미통과: ${review.hardFailLabels.join(", ")}`
+      : !bestCandidate.depthSatisfied
+        ? `안전 규칙은 통과했지만 본문 깊이가 부족합니다. (본문 ${bestCandidate.bodyCharCount}자 / 소제목 ${bestCandidate.sectionCount}개)`
+        : review.naturalnessScore >= MIN_NATURALNESS_TARGET
+          ? "핵심 안전 규칙과 본문 깊이 기준을 통과했고 자연스러움도 충족했습니다."
+          : `핵심 안전 규칙과 본문 깊이는 통과했지만 자연스러움 점수(${review.naturalnessScore})가 권장 기준(${MIN_NATURALNESS_TARGET})보다 낮습니다.`;
 
     console.info("[generate.pipeline]", {
       pipelineVersion: PIPELINE_VERSION,
       draftCandidates: draftCompletion.choices.length,
       compliancePasses,
       hardPass: review.hardPass,
+      depthSatisfied: bestCandidate.depthSatisfied,
+      sectionCount: bestCandidate.sectionCount,
+      bodyCharCount: bestCandidate.bodyCharCount,
       naturalnessScore: review.naturalnessScore,
       selectionScore: review.selectionScore,
       requestedFixHints,

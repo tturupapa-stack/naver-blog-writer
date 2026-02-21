@@ -24,8 +24,9 @@ const FIX_HINT_GUIDE: Record<string, string> = {
     "절대적 표현(무조건, 반드시 효과 등)을 피하고 조건/개인차를 명시하세요.",
   "SEO: 소제목 키워드 반영":
     "소제목 최소 2개에 키워드 또는 밀접 연관 표현을 반영하세요.",
+  "소제목 개수": "소제목을 5~6개로 맞춰 구조 깊이를 확보하세요.",
   "키워드 밀도": "키워드 밀도는 0.6~3.2% 범위를 목표로 맞추세요.",
-  "본문 길이": "본문 길이를 1600~3800자 권장 범위로 조정하세요.",
+  "본문 길이": "본문 길이를 2200~4500자 권장 범위로 조정하세요.",
   "AI 티 문체 점검":
     "정형 문구 남발을 줄이고 실제 맥락/상황 표현을 넣어 문장을 자연스럽게 다듬으세요.",
   "문장 리듬 다양성":
@@ -44,7 +45,7 @@ function formatFixGuides(fixHints: string[] | undefined): string {
   return fixHints
     .map(
       (hint) =>
-        `- ${FIX_HINT_GUIDE[hint] || `${hint} 항목을 최소 수정으로 해결하세요.`}`
+        `- ${FIX_HINT_GUIDE[hint] || `${hint} 항목을 해결하고 필요하면 문단을 확장하세요.`}`
     )
     .join("\n");
 }
@@ -80,9 +81,10 @@ ${searchContext || "최신 검색 결과 없음"}
 - 반복 문장부호(!!!!, ????) 및 스팸성 반복 표현 금지
 
 ## Soft Goal (권장)
-- 소제목 4~5개, 소제목 2개 이상에 키워드/연관 표현 반영
+- 소제목은 5~6개로 구성하고, 소제목 2개 이상에 키워드/연관 표현 반영
+- 각 section.body는 최소 3문단 이상으로 작성
 - 키워드 밀도는 자연스럽게 0.6~3.2% 범위
-- 본문 길이는 1600~3800자 권장
+- 본문 길이는 2200~4500자 권장
 - AI 상투문구("이 글에서는", "결론적으로" 등) 과다 사용 금지
 
 ## 이미지 연관성 가이드
@@ -96,6 +98,7 @@ ${searchContext || "최신 검색 결과 없음"}
 - 문장 길이와 문장 시작 패턴을 다양하게 섞으세요.
 - 정보 나열보다 "왜 이런 선택이 나왔는지" 맥락을 설명하세요.
 - 과장하지 말고 한계/주의점도 함께 적으세요.
+- 각 소제목마다 실제 사례/비교 기준/실수 방지 팁 중 최소 1개를 반드시 포함하세요.
 
 ## 출력 형식 (JSON만)
 \`\`\`json
@@ -134,6 +137,7 @@ export function buildCompliancePrompt(params: {
   hardFailLabels: string[];
   softFocusLabels: string[];
   requestedFixHints?: string[];
+  allowExpansion?: boolean;
 }): string {
   const {
     keyword,
@@ -143,6 +147,7 @@ export function buildCompliancePrompt(params: {
     hardFailLabels,
     softFocusLabels,
     requestedFixHints,
+    allowExpansion,
   } = params;
   const toneDesc = TONE_DESCRIPTIONS[tone];
   const mergedFixHints = Array.from(
@@ -150,7 +155,7 @@ export function buildCompliancePrompt(params: {
   ).slice(0, 10);
 
   return `당신은 네이버 블로그 전문 편집자입니다.
-기존 원고를 "최소 수정" 원칙으로 보정하세요.
+기존 원고를 품질 기준에 맞게 보정하세요.
 
 ## 편집 우선순위
 1) Hard Rule 위반 해결
@@ -178,14 +183,19 @@ ${formatFixHints(requestedFixHints)}
 ## 항목별 편집 가이드
 ${formatFixGuides(mergedFixHints)}
 
+## 편집 모드
+${allowExpansion
+  ? "- 확장 모드: 원고 흐름/문체는 유지하되, 본문 길이와 정보 밀도를 충족하도록 문단과 사례를 적극 보강하세요."
+  : "- 미세 보정 모드: 기존 구조를 유지하며 필요한 문장만 정밀 보정하세요."}
+
 ## 기존 원고(JSON)
 \`\`\`json
 ${previousJson}
 \`\`\`
 
 ## 절대 규칙
-- 원고 전체를 새로 쓰지 마세요.
-- 위반 항목과 직접 관련된 문장만 최소한으로 수정하세요.
+- 원고 전체 톤과 핵심 흐름은 유지하세요.
+- 길이/깊이 부족이 있을 때는 section을 유지한 채 본문 문단과 사례를 추가 확장하세요.
 - 원문의 문체/리듬/관점(voiceAnchor)을 최대한 유지하세요.
 - 정보 과장, 불법성, 보장성 표현은 제거하세요.
 - imageKeywords는 본문 맥락과 직접 연결되게 유지/보정하세요. 특히 브랜드/제품 언급이 있으면 해당 명칭을 앞순위로 배치하세요.
