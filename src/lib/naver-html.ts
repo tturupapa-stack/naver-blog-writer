@@ -55,9 +55,20 @@ export function buildNaverHtml(params: {
 }
 
 function buildImageBlock(img: UnsplashImage): string {
-  return `<div style="text-align: center; margin: 25px 0;">
+  const isUnsplash = img.provider === "unsplash" || img.photographerUrl.includes("unsplash.com");
+  const sourceUrl = img.sourceUrl || img.photographerUrl;
+  const sourceName = img.sourceName || img.photographer;
+
+  if (isUnsplash) {
+    return `<div style="text-align: center; margin: 25px 0;">
 <img src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt)}" style="max-width: 100%; border-radius: 8px;" />
 <p style="font-size: 12px; color: #999; margin-top: 8px;">Photo by <a href="${escapeHtml(img.photographerUrl)}?utm_source=naver_blog_writer&utm_medium=referral" style="color: #999; text-decoration: underline;" target="_blank" rel="noopener noreferrer">${escapeHtml(img.photographer)}</a> on <a href="https://unsplash.com?utm_source=naver_blog_writer&utm_medium=referral" style="color: #999; text-decoration: underline;" target="_blank" rel="noopener noreferrer">Unsplash</a></p>
+</div>`;
+  }
+
+  return `<div style="text-align: center; margin: 25px 0;">
+<img src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt)}" style="max-width: 100%; border-radius: 8px;" />
+<p style="font-size: 12px; color: #999; margin-top: 8px;">출처: <a href="${escapeHtml(sourceUrl)}" style="color: #999; text-decoration: underline;" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceName)}</a></p>
 </div>`;
 }
 

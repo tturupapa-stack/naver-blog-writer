@@ -13,7 +13,7 @@ const TONES: { value: ToneType; label: string; desc: string }[] = [
 
 export default function BlogGenerator() {
   const [keyword, setKeyword] = useState("");
-  const [tone, setTone] = useState<ToneType>("informative");
+  const [tone, setTone] = useState<ToneType>("experience");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateResponse | null>(null);
@@ -180,7 +180,6 @@ export default function BlogGenerator() {
       {result && !loading && (
         <BlogResult
           result={result}
-          keyword={keyword}
           onFixIssue={(issue) => handleGenerate([issue])}
           onFixAllIssues={(issues) => handleGenerate(issues)}
         />

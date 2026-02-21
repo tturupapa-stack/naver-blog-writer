@@ -1,93 +1,103 @@
 import { ToneType } from "./types";
 
 const TONE_DESCRIPTIONS: Record<ToneType, string> = {
-  informative: "정보성 글: 객관적이고 신뢰감 있는 톤. 정확한 정보 전달에 초점. '~입니다', '~합니다' 체를 사용.",
-  experience: "경험담 글: 친근하고 개인적인 톤. 실제 경험한 것처럼 자연스럽게. '~했어요', '~더라고요' 체를 사용.",
-  review: "리뷰 글: 솔직하고 상세한 톤. 장단점을 균형있게. '~인데요', '~거든요' 체를 사용.",
-  guide: "가이드 글: 단계별로 친절한 톤. 따라하기 쉽게 설명. '~해보세요', '~하면 됩니다' 체를 사용.",
+  informative:
+    "정보성 글: 신뢰감 있게 설명하되, 말투가 딱딱해지지 않게 실제 사용 맥락 예시를 넣습니다.",
+  experience:
+    "경험담 글: 1인칭 경험을 자연스럽게 녹이고, 과장 없이 솔직한 체감 포인트를 전달합니다.",
+  review:
+    "리뷰 글: 장점/아쉬운 점을 균형 있게 보여주고, 구매 전 판단에 도움이 되는 비교 관점을 유지합니다.",
+  guide:
+    "가이드 글: 따라하기 쉬운 순서로 설명하되, 실제로 막히는 지점을 짚어주는 코칭 톤을 사용합니다.",
 };
 
 const FIX_HINT_GUIDE: Record<string, string> = {
-  "SEO: 제목 키워드 포함": "제목에 메인 키워드를 정확히 포함하세요.",
-  "SEO: 첫 문단 키워드 포함": "첫 문단(도입부 2~3문장)에 메인 키워드를 자연스럽게 1회 이상 넣으세요.",
-  "SEO: 소제목 키워드 반영": "소제목 중 최소 2개에 메인 키워드 또는 밀접한 연관 표현을 포함하세요.",
-  "키워드 밀도":
-    "전체 본문에서 메인 키워드가 자연스럽게 5~8회 등장하도록 조정하세요. 과도 반복은 금지합니다.",
-  "본문 길이": "본문은 1800~3000자 범위를 우선 목표로 작성하세요.",
+  "SEO: 제목 키워드 포함":
+    "제목에 메인 키워드를 정확한 형태로 포함하세요.",
+  "SEO: 첫 문단 키워드 포함":
+    "도입부 2~3문장 안에 메인 키워드를 자연스럽게 1회 이상 포함하세요.",
   "저품질 위험 패턴":
-    "과도한 감탄사/반복 문장부호를 제거하고 문장 길이와 표현을 자연스럽게 분산하세요.",
-  "AI 티 문체 점검":
-    "AI가 쓴 듯한 정형 문구(예: '이 글에서는', '결론적으로')를 줄이고 실제 경험/맥락이 드러나는 자연스러운 문체로 작성하세요.",
+    "반복 문장부호, 과도한 감탄사, 문장 패턴 반복을 줄이세요.",
   "금칙어 점검":
-    "과장/보장/불법성으로 해석될 수 있는 표현을 제거하고 중립적인 문장으로 교체하세요.",
-  "태그 개수": "태그를 5~8개 범위로 맞추고 키워드 연관성을 유지하세요.",
+    "보장/불법/자극성 단어를 제거하고 중립적 표현으로 바꾸세요.",
+  "위험 주장 점검":
+    "절대적 표현(무조건, 반드시 효과 등)을 피하고 조건/개인차를 명시하세요.",
+  "SEO: 소제목 키워드 반영":
+    "소제목 최소 2개에 키워드 또는 밀접 연관 표현을 반영하세요.",
+  "키워드 밀도": "키워드 밀도는 0.6~3.2% 범위를 목표로 맞추세요.",
+  "본문 길이": "본문 길이를 1600~3800자 권장 범위로 조정하세요.",
+  "AI 티 문체 점검":
+    "정형 문구 남발을 줄이고 실제 맥락/상황 표현을 넣어 문장을 자연스럽게 다듬으세요.",
+  "문장 리듬 다양성":
+    "문장 길이와 시작 어구를 다양화해 읽는 리듬을 분산하세요.",
+  "구체성/맥락 표현": "숫자, 상황, 비교 기준 등 구체 표현을 보강하세요.",
+  "태그 개수": "태그는 5~8개로 맞추고 중복 없이 키워드 연관성을 유지하세요.",
 };
 
-export function buildBlogPrompt(params: {
+function formatFixHints(fixHints: string[] | undefined): string {
+  if (!Array.isArray(fixHints) || fixHints.length === 0) return "- 없음";
+  return fixHints.map((hint) => `- ${hint}`).join("\n");
+}
+
+function formatFixGuides(fixHints: string[] | undefined): string {
+  if (!Array.isArray(fixHints) || fixHints.length === 0) return "- 없음";
+  return fixHints
+    .map(
+      (hint) =>
+        `- ${FIX_HINT_GUIDE[hint] || `${hint} 항목을 최소 수정으로 해결하세요.`}`
+    )
+    .join("\n");
+}
+
+export function buildDraftPrompt(params: {
   keyword: string;
   tone: ToneType;
   searchContext: string;
-  fixHints?: string[];
 }): string {
-  const { keyword, tone, searchContext, fixHints } = params;
+  const { keyword, tone, searchContext } = params;
   const toneDesc = TONE_DESCRIPTIONS[tone];
-  const hasFixHints = Array.isArray(fixHints) && fixHints.length > 0;
-  const fixGuides = hasFixHints
-    ? fixHints.map((hint) => FIX_HINT_GUIDE[hint] || `${hint} 항목을 통과하도록 수정`)
-    : [];
 
-  return `당신은 네이버 블로그 전문 작가입니다. 아래 조건에 맞는 블로그 글을 작성하세요.
+  return `당신은 네이버 블로그에 실제로 글을 연재하는 한국인 작가입니다.
+
+목표 우선순위:
+1) 사람이 직접 쓴 듯한 자연스러운 흐름과 문체
+2) 필수 안전 규칙(Hard Rule) 충족
+3) SEO/형식 최적화(Soft Goal)
 
 ## 키워드
 ${keyword}
 
-## 글 톤/스타일
+## 글 톤
 ${toneDesc}
 
-## 최신 정보 (참고용)
+## 최신 참고 정보
 ${searchContext || "최신 검색 결과 없음"}
 
-## 우선 개선할 항목
-${
-  hasFixHints
-    ? fixHints.map((hint) => `- ${hint}`).join("\n")
-    : "- 없음"
-}
+## Hard Rule (반드시 준수)
+- 제목에 키워드 "${keyword}" 포함
+- 첫 문단(도입 2~3문장)에 키워드 1회 이상 포함
+- 금칙어/불법/보장성 표현 금지
+- 반복 문장부호(!!!!, ????) 및 스팸성 반복 표현 금지
 
-## 우선 개선 방법
-${hasFixHints ? fixGuides.map((guide) => `- ${guide}`).join("\n") : "- 없음"}
+## Soft Goal (권장)
+- 소제목 4~5개, 소제목 2개 이상에 키워드/연관 표현 반영
+- 키워드 밀도는 자연스럽게 0.6~3.2% 범위
+- 본문 길이는 1600~3800자 권장
+- AI 상투문구("이 글에서는", "결론적으로" 등) 과다 사용 금지
 
-## 반드시 지켜야 할 규칙
+## 이미지 연관성 가이드
+- 본문에 언급한 브랜드/제품/서비스가 있으면 해당 명칭을 imageKeywords 앞순위에 반드시 포함하세요.
+- imageKeywords는 "브랜드명 + 모델명", "브랜드 공식 이미지", "브랜드/제품 리뷰 기사 사진"처럼 구체적으로 작성하세요.
+- 막연한 단어(예: technology, lifestyle, business)만 단독으로 쓰지 마세요.
+- 브랜드명이 없는 주제라면 "주제 + 기사 사진", "주제 + 실제 사용 장면" 형태로 작성하세요.
 
-### SEO 최적화
-- 제목에 반드시 키워드 "${keyword}" 포함
-- 첫 문단에 키워드를 자연스럽게 1-2회 포함
-- 각 소제목에도 키워드 또는 관련 표현 포함
-- 키워드 밀도: 전체 글에서 키워드가 자연스럽게 5-8회 등장 (과다 사용 금지)
-- 이전 결과에서 개선 요청이 들어온 항목은 우선순위로 반영
-- 개선 요청이 들어온 항목은 가능한 한 모두 "통과" 상태를 목표로 작성
+## 자연스러움 가이드
+- 실제 상황을 떠올릴 수 있는 표현(시간/장소/비교 기준/체감 포인트)을 넣으세요.
+- 문장 길이와 문장 시작 패턴을 다양하게 섞으세요.
+- 정보 나열보다 "왜 이런 선택이 나왔는지" 맥락을 설명하세요.
+- 과장하지 말고 한계/주의점도 함께 적으세요.
 
-### 글 구조
-- 소제목 4-5개로 구성
-- 각 소제목 아래 2-3개 문단
-- 전체 글 길이: 2000-3000자
-- 마지막에 간단한 마무리 문단
-
-### 네이버 저품질 방지
-- 자연스러운 한국어 문체 사용
-- 키워드 나열/스팸 금지
-- 복사한 듯한 문장 금지
-- 독창적이고 읽기 편한 글
-
-### AI 티 방지
-- "이 글에서는, 결론적으로, 요약하면" 같은 정형 문구 남발 금지
-- 문장 시작 패턴 반복 금지 (같은 어휘로 연속 시작하지 않기)
-- 실제 사용 맥락/경험 뉘앙스를 넣어 사람 글처럼 자연스럽게 작성
-
-### 유용한 팁
-- 적절한 곳에 TIP 박스로 표시할 유용한 정보 1-2개 포함
-
-## 출력 형식 (반드시 이 JSON 형식으로)
+## 출력 형식 (JSON만)
 \`\`\`json
 {
   "title": "블로그 제목 (키워드 포함)",
@@ -96,22 +106,124 @@ ${hasFixHints ? fixGuides.map((guide) => `- ${guide}`).join("\n") : "- 없음"}
       "heading": "소제목 1",
       "body": "본문 내용...",
       "tip": "팁 내용 (없으면 null)"
-    },
-    {
-      "heading": "소제목 2",
-      "body": "본문 내용...",
-      "tip": null
     }
   ],
   "tags": ["태그1", "태그2", "태그3", "태그4", "태그5"],
-  "imageKeywords": ["영문 이미지 검색 키워드1", "영문 이미지 검색 키워드2", "영문 이미지 검색 키워드3"]
+  "imageKeywords": [
+    "브랜드/제품명 중심 키워드 1",
+    "브랜드 공식 이미지 키워드 2",
+    "리뷰 기사 이미지 키워드 3",
+    "실사용 장면 키워드 4",
+    "비교/핵심 기능 키워드 5"
+  ],
+  "voiceAnchor": [
+    "이 글의 문체를 대표하는 짧은 기준 문장 1",
+    "이 글의 문체를 대표하는 짧은 기준 문장 2"
+  ]
 }
 \`\`\`
 
-tags: 네이버 블로그에 사용할 한글 태그 5-8개 (키워드 관련)
-imageKeywords: Unsplash에서 검색할 영문 키워드 3개 (글 내용과 관련된 실사 이미지)
+JSON 외 텍스트는 출력하지 마세요.`;
+}
 
-JSON만 출력하세요. 다른 설명은 필요 없습니다.`;
+export function buildCompliancePrompt(params: {
+  keyword: string;
+  tone: ToneType;
+  searchContext: string;
+  previousJson: string;
+  hardFailLabels: string[];
+  softFocusLabels: string[];
+  requestedFixHints?: string[];
+}): string {
+  const {
+    keyword,
+    tone,
+    searchContext,
+    previousJson,
+    hardFailLabels,
+    softFocusLabels,
+    requestedFixHints,
+  } = params;
+  const toneDesc = TONE_DESCRIPTIONS[tone];
+  const mergedFixHints = Array.from(
+    new Set([...(requestedFixHints || []), ...hardFailLabels, ...softFocusLabels])
+  ).slice(0, 10);
+
+  return `당신은 네이버 블로그 전문 편집자입니다.
+기존 원고를 "최소 수정" 원칙으로 보정하세요.
+
+## 편집 우선순위
+1) Hard Rule 위반 해결
+2) 사용자가 요청한 수정 항목 반영
+3) Soft Goal 개선 (가능한 범위에서)
+
+## 메인 키워드
+${keyword}
+
+## 톤 기준
+${toneDesc}
+
+## 최신 참고 정보
+${searchContext || "최신 검색 결과 없음"}
+
+## 반드시 해결할 Hard Fail
+${formatFixHints(hardFailLabels)}
+
+## 보완할 Soft 항목
+${formatFixHints(softFocusLabels)}
+
+## 사용자 요청 수정 항목
+${formatFixHints(requestedFixHints)}
+
+## 항목별 편집 가이드
+${formatFixGuides(mergedFixHints)}
+
+## 기존 원고(JSON)
+\`\`\`json
+${previousJson}
+\`\`\`
+
+## 절대 규칙
+- 원고 전체를 새로 쓰지 마세요.
+- 위반 항목과 직접 관련된 문장만 최소한으로 수정하세요.
+- 원문의 문체/리듬/관점(voiceAnchor)을 최대한 유지하세요.
+- 정보 과장, 불법성, 보장성 표현은 제거하세요.
+- imageKeywords는 본문 맥락과 직접 연결되게 유지/보정하세요. 특히 브랜드/제품 언급이 있으면 해당 명칭을 앞순위로 배치하세요.
+
+## 출력 형식 (JSON만)
+\`\`\`json
+{
+  "title": "블로그 제목 (키워드 포함)",
+  "sections": [
+    {
+      "heading": "소제목 1",
+      "body": "본문 내용...",
+      "tip": "팁 내용 (없으면 null)"
+    }
+  ],
+  "tags": ["태그1", "태그2", "태그3", "태그4", "태그5"],
+  "imageKeywords": [
+    "브랜드/제품명 중심 키워드 1",
+    "브랜드 공식 이미지 키워드 2",
+    "리뷰 기사 이미지 키워드 3",
+    "실사용 장면 키워드 4",
+    "비교/핵심 기능 키워드 5"
+  ],
+  "voiceAnchor": ["기준 문장 1", "기준 문장 2"]
+}
+\`\`\`
+
+JSON 외 텍스트는 출력하지 마세요.`;
+}
+
+// Backward-compatible aliases
+export function buildBlogPrompt(params: {
+  keyword: string;
+  tone: ToneType;
+  searchContext: string;
+  fixHints?: string[];
+}): string {
+  return buildDraftPrompt(params);
 }
 
 export function buildRefinePrompt(params: {
@@ -121,54 +233,13 @@ export function buildRefinePrompt(params: {
   fixHints: string[];
   previousJson: string;
 }): string {
-  const { keyword, tone, searchContext, fixHints, previousJson } = params;
-  const toneDesc = TONE_DESCRIPTIONS[tone];
-  const fixGuides = fixHints.map(
-    (hint) => FIX_HINT_GUIDE[hint] || `${hint} 항목을 통과하도록 수정`
-  );
-
-  return `당신은 네이버 블로그 전문 편집자입니다. 기존 원고를 개선해 기준을 충족시키세요.
-
-## 메인 키워드
-${keyword}
-
-## 글 톤/스타일
-${toneDesc}
-
-## 최신 정보 (참고용)
-${searchContext || "최신 검색 결과 없음"}
-
-## 반드시 개선할 항목
-${fixHints.map((hint) => `- ${hint}`).join("\n")}
-
-## 개선 가이드
-${fixGuides.map((guide) => `- ${guide}`).join("\n")}
-
-## 기존 원고(JSON)
-\`\`\`json
-${previousJson}
-\`\`\`
-
-## 수정 원칙
-- 기존 글의 핵심 맥락은 유지하되, 반드시 개선 항목을 해결
-- 사람의 실제 작성처럼 자연스러운 문체 사용
-- 키워드 과다 반복은 금지
-- 전체 길이는 2000~3000자 목표
-
-## 출력 형식
-아래 JSON만 출력하세요.
-\`\`\`json
-{
-  "title": "블로그 제목 (키워드 포함)",
-  "sections": [
-    {
-      "heading": "소제목 1",
-      "body": "본문 내용...",
-      "tip": "팁 내용 (없으면 null)"
-    }
-  ],
-  "tags": ["태그1", "태그2", "태그3", "태그4", "태그5"],
-  "imageKeywords": ["english keyword 1", "english keyword 2", "english keyword 3"]
-}
-\`\`\``;
+  return buildCompliancePrompt({
+    keyword: params.keyword,
+    tone: params.tone,
+    searchContext: params.searchContext,
+    previousJson: params.previousJson,
+    hardFailLabels: params.fixHints,
+    softFocusLabels: params.fixHints,
+    requestedFixHints: params.fixHints,
+  });
 }

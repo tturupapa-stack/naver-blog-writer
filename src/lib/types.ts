@@ -8,6 +8,11 @@ export interface UnsplashImage {
   alt: string;
   photographer: string;
   photographerUrl: string;
+  provider?: "unsplash" | "brave";
+  sourceName?: string;
+  sourceUrl?: string;
+  matchedQuery?: string;
+  relevanceScore?: number;
 }
 
 export interface GenerateRequest {
@@ -23,14 +28,24 @@ export interface GenerateResponse {
   thumbnail: UnsplashImage | null;
   images: UnsplashImage[];
   review?: ReviewReport;
+  qualityGate?: {
+    passed: boolean;
+    hardPass: boolean;
+    naturalnessTarget: number;
+    pipelineVersion: string;
+    message: string;
+  };
 }
 
 export type ReviewItemStatus = "pass" | "warn";
+export type ReviewItemBucket = "hard" | "naturalness" | "seo" | "complianceSoft";
 
 export interface ReviewItem {
   label: string;
   status: ReviewItemStatus;
   detail: string;
+  bucket: ReviewItemBucket;
+  isHard: boolean;
 }
 
 export interface ReviewReport {
@@ -40,6 +55,17 @@ export interface ReviewReport {
   keywordDensity: number;
   flaggedWords: string[];
   items: ReviewItem[];
+  hardPass: boolean;
+  hardFailLabels: string[];
+  hardChecks: {
+    passed: number;
+    total: number;
+  };
+  naturalnessScore: number;
+  complianceSoftScore: number;
+  seoScore: number;
+  selectionScore: number;
+  pipelineVersion: string;
 }
 
 export interface ImageSearchResponse {

@@ -5,14 +5,12 @@ import { GenerateResponse, ReviewReport, UnsplashImage } from "@/lib/types";
 
 interface BlogResultProps {
   result: GenerateResponse;
-  keyword: string;
   onFixIssue: (issue: string) => void;
   onFixAllIssues: (issues: string[]) => void;
 }
 
 export default function BlogResult({
   result,
-  keyword,
   onFixIssue,
   onFixAllIssues,
 }: BlogResultProps) {
@@ -47,7 +45,7 @@ export default function BlogResult({
       const accessKey = new URLSearchParams(window.location.search).get(
         "unsplash_key"
       );
-      if (accessKey) {
+      if (image.provider === "unsplash" && accessKey) {
         fetch(
           `${image.downloadUrl}?client_id=${accessKey}`
         ).catch(() => {});
@@ -65,11 +63,21 @@ export default function BlogResult({
     keywordCount: 0,
     keywordDensity: 0,
     flaggedWords: [],
+    hardPass: false,
+    hardFailLabels: ["검토 리포트"],
+    hardChecks: { passed: 0, total: 0 },
+    naturalnessScore: 0,
+    complianceSoftScore: 0,
+    seoScore: 0,
+    selectionScore: 0,
+    pipelineVersion: "unknown",
     items: [
       {
         label: "검토 리포트",
         status: "warn",
         detail: "이 결과에는 검토 데이터가 없어 새로 생성이 필요합니다.",
+        bucket: "hard",
+        isHard: true,
       },
     ],
   };
@@ -90,6 +98,7 @@ export default function BlogResult({
     },
   }[review.overallStatus];
   const warningItems = review.items.filter((item) => item.status === "warn");
+  const hardWarningItems = warningItems.filter((item) => item.isHard);
 
   return (
     <div className="space-y-6">
@@ -175,7 +184,7 @@ export default function BlogResult({
                 주의 항목 일괄 수정
               </button>
             )}
-            <span className="text-sm text-zinc-400">점수 {review.score}/100</span>
+            <span className="text-sm text-zinc-400">선택 점수 {review.score}/100</span>
             <span
               className={`px-2.5 py-1 rounded-md text-xs font-semibold ${overallStatusMeta.className}`}
             >
@@ -184,20 +193,41 @@ export default function BlogResult({
           </div>
         </div>
 
-        <div className="grid sm:grid-cols-2 gap-3 mb-4">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
           <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-3 text-sm">
-            <p className="text-zinc-400">키워드 등장 횟수</p>
+            <p className="text-zinc-400">Hard 규칙</p>
+            <p className={`font-semibold mt-1 ${review.hardPass ? "text-emerald-300" : "text-red-300"}`}>
+              {review.hardChecks.passed}/{review.hardChecks.total} 통과
+            </p>
+          </div>
+          <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-3 text-sm">
+            <p className="text-zinc-400">자연스러움</p>
             <p className="text-white font-semibold mt-1">
-              {review.keywordCount}회
+              {review.naturalnessScore}
+            </p>
+          </div>
+          <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-3 text-sm">
+            <p className="text-zinc-400">SEO 점수</p>
+            <p className="text-white font-semibold mt-1">
+              {review.seoScore}
             </p>
           </div>
           <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-3 text-sm">
             <p className="text-zinc-400">키워드 밀도</p>
             <p className="text-white font-semibold mt-1">
-              {review.keywordDensity}%
+              {review.keywordDensity}% ({review.keywordCount}회)
             </p>
           </div>
         </div>
+
+        {result.qualityGate && (
+          <div className="mb-4 bg-zinc-800/50 border border-zinc-700 rounded-xl p-3 text-sm text-zinc-300">
+            <p>{result.qualityGate.message}</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              pipeline: {result.qualityGate.pipelineVersion} / 자연스러움 목표 {result.qualityGate.naturalnessTarget}
+            </p>
+          </div>
+        )}
 
         <div className="space-y-2">
           {review.items.map((item) => (
@@ -235,6 +265,12 @@ export default function BlogResult({
         {review.flaggedWords.length > 0 && (
           <p className="text-sm text-red-300 mt-4">
             금칙어 감지: {review.flaggedWords.join(", ")}
+          </p>
+        )}
+
+        {hardWarningItems.length > 0 && (
+          <p className="text-sm text-amber-300 mt-2">
+            Hard 미통과: {hardWarningItems.map((item) => item.label).join(", ")}
           </p>
         )}
       </div>
@@ -283,8 +319,11 @@ export default function BlogResult({
                   </button>
                 </div>
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
-                  <p className="text-xs text-zinc-300 truncate">
-                    by {img.photographer}
+                  <p className="text-xs text-zinc-300 truncate">{img.alt}</p>
+                  <p className="text-[11px] text-zinc-400 truncate mt-0.5">
+                    {img.provider === "brave"
+                      ? `출처: ${img.sourceName || img.photographer}`
+                      : `Unsplash · ${img.photographer}`}
                   </p>
                 </div>
                 {result.thumbnail?.id === img.id && (
@@ -311,9 +350,6 @@ export default function BlogResult({
                 #{tag}
               </span>
             ))}
-            <span className="px-3 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-300">
-              #{keyword}
-            </span>
           </div>
         </div>
       )}
